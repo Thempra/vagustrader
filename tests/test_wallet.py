@@ -26,5 +26,5 @@ def test_sign_is_deterministic():
 
 
 def test_invalid_key_raises():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         Wallet.from_private_key("bad-key")

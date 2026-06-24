@@ -4,14 +4,18 @@ from eth_account.messages import encode_defunct
 
 class Wallet:
     def __init__(self, private_key: str):
-        self._account = Account.from_key(private_key)
+        account = Account.from_key(private_key)
+        self._address: str = account.address
+        self._sign_fn = account.sign_message
+        del account
 
     @property
     def address(self) -> str:
-        return self._account.address
+        return self._address
 
     def sign_message(self, message: str) -> str:
-        signed = self._account.sign_message(encode_defunct(text=message))
+        signed = self._sign_fn(encode_defunct(text=message))
+        # HexBytes.hex() returns signature without '0x' prefix, so we prepend it
         return "0x" + signed.signature.hex()
 
     @classmethod
