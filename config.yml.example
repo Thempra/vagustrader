@@ -7,7 +7,7 @@ strategies:
   copy_trading:
     enabled: true
     poll_interval_seconds: 300
-    min_win_rate: 0.70
+    min_pnl: 10000
     min_volume_usd: 10000
     price_guard: 0.05
     max_copy_per_trader: 3

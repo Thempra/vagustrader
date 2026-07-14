@@ -8,7 +8,6 @@ class LeaderboardEntry:
     name: str
     pnl: float
     volume: float
-    win_rate: float
 
 
 @dataclass
@@ -26,12 +25,15 @@ class DataApiClient:
         self._client = httpx.Client(base_url=base_url, timeout=10.0)
 
     def get_leaderboard(self, limit: int = 100, offset: int = 0) -> list[LeaderboardEntry]:
-        resp = self._client.get("/leaderboard", params={"limit": limit, "offset": offset})
+        resp = self._client.get(
+            "/v1/leaderboard",
+            params={"limit": limit, "offset": offset, "timePeriod": "ALL", "orderBy": "PNL"},
+        )
         resp.raise_for_status()
         return [self._parse_entry(e) for e in resp.json()]
 
-    def get_top_traders(self, min_win_rate: float = 0.70, limit: int = 100) -> list[LeaderboardEntry]:
-        return [e for e in self.get_leaderboard(limit=limit) if e.win_rate >= min_win_rate]
+    def get_top_traders(self, min_pnl: float = 10_000, limit: int = 100) -> list[LeaderboardEntry]:
+        return [e for e in self.get_leaderboard(limit=limit) if e.pnl >= min_pnl]
 
     def get_positions(self, user_address: str) -> list[Position]:
         resp = self._client.get("/positions", params={"user": user_address})
@@ -45,11 +47,10 @@ class DataApiClient:
 
     def _parse_entry(self, d: dict) -> LeaderboardEntry:
         return LeaderboardEntry(
-            address=d.get("address", ""),
-            name=d.get("name", ""),
+            address=d.get("proxyWallet", ""),
+            name=d.get("userName", ""),
             pnl=float(d.get("pnl", 0)),
-            volume=float(d.get("volume", 0)),
-            win_rate=float(d.get("winRate", 0)),
+            volume=float(d.get("vol", 0)),
         )
 
     def _parse_position(self, d: dict) -> Position:

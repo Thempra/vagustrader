@@ -1,0 +1,16 @@
+risk:
+  max_position_usdc: 50.0
+  max_open_positions: 10
+  daily_loss_limit_usdc: 200.0
+
+strategies:
+  copy_trading:
+    enabled: true
+    poll_interval_seconds: 300
+    min_pnl: 10000
+    min_volume_usd: 10000
+    price_guard: 0.05
+    max_copy_per_trader: 3
+
+markets:
+  min_liquidity_usdc: 5000

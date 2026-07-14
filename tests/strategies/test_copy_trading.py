@@ -8,7 +8,7 @@ from polywin.clients.data_api import LeaderboardEntry, Position
 from polywin.clients.clob import PaperClobClient
 
 
-async def _make_ctx(tmp_path, min_wr=0.70):
+async def _make_ctx(tmp_path, min_pnl=10_000):
     from polywin.db import init_db
     db_path = str(tmp_path / "test.db")
     await init_db(db_path)
@@ -18,7 +18,7 @@ async def _make_ctx(tmp_path, min_wr=0.70):
             copy_trading=CopyTradingConfig(
                 enabled=True,
                 poll_interval_seconds=9999,
-                min_win_rate=min_wr,
+                min_pnl=min_pnl,
                 max_copy_per_trader=3,
                 price_guard=0.05,
                 min_volume_usd=0,
@@ -27,7 +27,7 @@ async def _make_ctx(tmp_path, min_wr=0.70):
     )
     data_api = MagicMock()
     data_api.get_top_traders.return_value = [
-        LeaderboardEntry("0xTRADER", "alpha", 50000.0, 1e6, 0.80)
+        LeaderboardEntry("0xTRADER", "alpha", 50000.0, 1e6)
     ]
     data_api.get_positions.return_value = [
         Position("0xTOK_YES", "0xMKT", "Yes", 100.0, 0.65, 70.0)

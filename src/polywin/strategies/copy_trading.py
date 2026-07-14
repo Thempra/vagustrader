@@ -16,7 +16,7 @@ class CopyTradingStrategy(Strategy):
         if not cfg.enabled:
             log.info("CopyTrading disabled")
             return
-        log.info(f"CopyTrading started — poll={cfg.poll_interval_seconds}s min_wr={cfg.min_win_rate}")
+        log.info(f"CopyTrading started — poll={cfg.poll_interval_seconds}s min_pnl=${cfg.min_pnl:,.0f}")
         while True:
             try:
                 await self._tick(ctx)
@@ -28,7 +28,7 @@ class CopyTradingStrategy(Strategy):
         cfg = ctx.config.strategies.copy_trading
         risk = ctx.config.risk
 
-        top_traders = ctx.data_api.get_top_traders(min_win_rate=cfg.min_win_rate)
+        top_traders = ctx.data_api.get_top_traders(min_pnl=cfg.min_pnl)
         if not top_traders:
             log.info("No qualifying traders found")
             return
