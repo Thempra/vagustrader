@@ -175,7 +175,7 @@ def test_top_traders_lists_results():
     from polywin.clients.data_api import LeaderboardEntry
 
     fake_trader = LeaderboardEntry(
-        address="0xTRADERLONG", name="alpha", pnl=12345.0, volume=999_000.0, win_rate=0.82
+        address="0xTRADERLONG", name="alpha", pnl=12345.0, volume=999_000.0
     )
 
     with (
@@ -184,7 +184,7 @@ def test_top_traders_lists_results():
     ):
         instance = MockData.return_value.__enter__.return_value
         instance.get_top_traders.return_value = [fake_trader]
-        result = runner.invoke(app, ["top-traders", "--min-wr", "0.70", "--limit", "5"])
+        result = runner.invoke(app, ["top-traders", "--min-pnl", "10000", "--limit", "5"])
 
     assert result.exit_code == 0, result.output
     assert "alpha" in result.output
@@ -195,7 +195,7 @@ def test_top_traders_address_truncated_when_no_name():
     from polywin.clients.data_api import LeaderboardEntry
 
     fake_trader = LeaderboardEntry(
-        address="0xADDRESSLONG123456", name="", pnl=1000.0, volume=50_000.0, win_rate=0.75
+        address="0xADDRESSLONG123456", name="", pnl=1000.0, volume=50_000.0
     )
 
     with (

@@ -25,7 +25,7 @@ def test_load_app_config_defaults_when_file_absent():
     cfg = load_app_config("nonexistent.yml")
     assert cfg.risk.max_position_usdc == 50.0
     assert cfg.strategies.copy_trading.enabled is True
-    assert cfg.strategies.copy_trading.min_win_rate == 0.70
+    assert cfg.strategies.copy_trading.min_pnl == 10_000
 
 
 def test_load_app_config_overrides_from_file(tmp_path):
@@ -33,9 +33,9 @@ def test_load_app_config_overrides_from_file(tmp_path):
     f = tmp_path / "config.yml"
     f.write_text(yaml.dump({
         "risk": {"max_position_usdc": 25.0},
-        "strategies": {"copy_trading": {"min_win_rate": 0.80}},
+        "strategies": {"copy_trading": {"min_pnl": 50_000}},
     }))
     cfg = load_app_config(str(f))
     assert cfg.risk.max_position_usdc == 25.0
-    assert cfg.strategies.copy_trading.min_win_rate == 0.80
+    assert cfg.strategies.copy_trading.min_pnl == 50_000
     assert cfg.strategies.copy_trading.poll_interval_seconds == 300

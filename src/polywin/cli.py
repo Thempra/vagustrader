@@ -88,7 +88,7 @@ def markets(
 
 @app.command("top-traders")
 def top_traders(
-    min_wr: float = typer.Option(0.70, "--min-wr", help="Minimum win rate (0–1)"),
+    min_pnl: float = typer.Option(10_000, "--min-pnl", help="Minimum all-time P&L in USD"),
     limit: int = typer.Option(20, "--limit"),
 ):
     """List top traders from the Polymarket leaderboard."""
@@ -97,16 +97,15 @@ def top_traders(
 
     s = Settings()
     with DataApiClient(s.data_api_url) as data:
-        traders = data.get_top_traders(min_win_rate=min_wr, limit=limit)
+        traders = data.get_top_traders(min_pnl=min_pnl, limit=limit)
 
-    t = Table(title=f"Top Traders  (win rate ≥ {min_wr:.0%})")
+    t = Table(title=f"Top Traders  (P&L ≥ ${min_pnl:,.0f})")
     t.add_column("Name / Address", max_width=18)
     t.add_column("P&L", justify="right", style="green")
-    t.add_column("Win Rate", justify="right")
     t.add_column("Volume", justify="right")
     for tr in traders:
         label = tr.name if tr.name else tr.address[:14] + "…"
-        t.add_row(label, f"${tr.pnl:,.0f}", f"{tr.win_rate:.0%}", f"${tr.volume:,.0f}")
+        t.add_row(label, f"${tr.pnl:,.0f}", f"${tr.volume:,.0f}")
     console.print(t)
 
 

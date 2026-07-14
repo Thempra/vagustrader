@@ -45,7 +45,7 @@ class RiskConfig(BaseModel):
 class CopyTradingConfig(BaseModel):
     enabled: bool = True
     poll_interval_seconds: int = 300
-    min_win_rate: float = 0.70
+    min_pnl: float = 10_000
     min_volume_usd: float = 10_000
     price_guard: float = 0.05
     max_copy_per_trader: int = 3

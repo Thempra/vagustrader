@@ -37,7 +37,7 @@ def _make_config(enabled: bool = True) -> AppConfig:
             copy_trading=CopyTradingConfig(
                 enabled=enabled,
                 poll_interval_seconds=9999,
-                min_win_rate=0.70,
+                min_pnl=10_000,
             )
         )
     )
