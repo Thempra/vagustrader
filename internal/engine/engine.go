@@ -1,0 +1,133 @@
+package engine
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/vagustrader/vagustrader/internal/cfg"
+	"github.com/vagustrader/vagustrader/internal/client/clob"
+	"github.com/vagustrader/vagustrader/internal/client/dataapi"
+	"github.com/vagustrader/vagustrader/internal/client/gamma"
+	"github.com/vagustrader/vagustrader/internal/db"
+	"github.com/vagustrader/vagustrader/internal/notify"
+	"github.com/vagustrader/vagustrader/internal/strategy"
+)
+
+type Engine struct {
+	settings   cfg.Settings
+	config     cfg.AppConfig
+	paper      bool
+	strategies []strategy.Strategy
+}
+
+func New(settings cfg.Settings, config cfg.AppConfig, paper bool) *Engine {
+	return &Engine{settings: settings, config: config, paper: paper}
+}
+
+func (e *Engine) Register(s strategy.Strategy) {
+	e.strategies = append(e.strategies, s)
+}
+
+func (e *Engine) Start(ctx context.Context) error {
+	database, err := db.Init("data/vagustrader.db")
+	if err != nil {
+		return err
+	}
+
+	creds, err := e.resolveCreds()
+	if err != nil {
+		return err
+	}
+
+	var clobClient clob.Client
+	if e.paper {
+		clobClient = clob.NewPaperClient("data/vagustrader.db")
+		slog.Info("Paper trading mode")
+	} else {
+		clobClient, err = clob.NewClobClient(e.settings.PrivateKey, creds, e.settings.ClobHost, e.settings.ChainID)
+		if err != nil {
+			return err
+		}
+		slog.Info("Live trading mode")
+	}
+
+	gammaClient := gamma.NewClient(e.settings.GammaAPIURL)
+	dataAPI := dataapi.NewClient(e.settings.DataAPIURL)
+	notifier := notify.New(e.settings.TelegramBotToken, e.settings.TelegramChannelID)
+
+	sctx := &strategy.Context{
+		Clob:     clobClient,
+		Gamma:    gammaClient,
+		DataAPI:  dataAPI,
+		Config:   &e.config,
+		DB:       database,
+		Paper:    e.paper,
+		Notifier: notifier,
+	}
+
+	names := make([]string, len(e.strategies))
+	for i, s := range e.strategies {
+		names[i] = s.Name()
+	}
+	slog.Info("Starting engine", "strategies", names)
+
+	g, gctx := errgroup.WithContext(ctx)
+	for _, s := range e.strategies {
+		s := s
+		g.Go(func() error {
+			return s.Run(gctx, sctx)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		slog.Error("Engine stopped", "error", err)
+		return err
+	}
+	slog.Info("Engine shutdown complete")
+	return nil
+}
+
+func (e *Engine) resolveCreds() (*clob.ClobCreds, error) {
+	if e.settings.ClobAPIKey != "" {
+		return &clob.ClobCreds{
+			APIKey:        e.settings.ClobAPIKey,
+			APISecret:     e.settings.ClobAPISecret,
+			APIPassphrase: e.settings.ClobAPIPassphrase,
+		}, nil
+	}
+	slog.Info("Deriving CLOB credentials from private key")
+	signer, err := clob.NewSigner(e.settings.PrivateKey, e.settings.ChainID)
+	if err != nil {
+		return nil, err
+	}
+	creds, err := clob.DeriveAPIKeyFromSigner(signer, e.settings.ClobHost)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("CLOB creds derived", "api_key", creds.APIKey[:8]+"...")
+	return creds, nil
+}
+
+func RunWithGracefulShutdown(settings cfg.Settings, config cfg.AppConfig, paper bool, strategies ...strategy.Strategy) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("Shutdown signal received")
+		cancel()
+	}()
+
+	engine := New(settings, config, paper)
+	for _, s := range strategies {
+		engine.Register(s)
+	}
+	return engine.Start(ctx)
+}
