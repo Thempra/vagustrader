@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="30">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VagusTrader</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="header">
+<div class="brand">&#x2B21; VAGUSTRADER</div>
+<div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val blue">{{.PositionCount}} <span style="font-size:11px;color:var(--dim)">/ ${{.TotalCost | printf "%.0f"}}</span></div></div>
+<div class="kpi-sep"></div>
+<div class="kpi"><div class="kpi-label">Total P&amp;L</div><div class="kpi-val {{.TotalPnL | pnlClass}}">${{.TotalPnL | printf "+%.2f"}}</div></div>
+<div class="kpi"><div class="kpi-label">Realized</div><div class="kpi-val {{.RealizedPnL | pnlClass}}">${{.RealizedPnL | printf "+%.2f"}}</div></div>
+<div class="kpi"><div class="kpi-label">Unrealized</div><div class="kpi-val {{.UnrealizedPnL | pnlClass}}">${{.UnrealizedPnL | printf "+%.2f"}}</div></div>
+<div class="kpi-sep"></div>
+<div class="kpi"><div class="kpi-label">Live today</div><div class="kpi-val green">{{.LiveToday}}</div></div>
+<div class="kpi"><div class="kpi-label">Paper today</div><div class="kpi-val yellow">{{.PaperToday}}</div></div>
+<div class="kpi"><div class="kpi-label">Invested</div><div class="kpi-val blue">${{.InvestedToday | printf "%.2f"}}</div></div>
+<div class="clock">&#x27F3; {{.Now}}</div>
+</div>
+<div class="main">
+<div class="panel panel-positions">
+<div class="panel-header">Open Positions <span class="count">{{.PositionCount}}</span></div>
+<div class="tbl-wrap">
+<table id="tbl-pos"><colgroup><col><col><col><col><col><col><col></colgroup>
+<thead><tr>
+<th>Market<span class="resize-handle"></span></th>
+<th class="col-side">Side<span class="resize-handle"></span></th>
+<th style="text-align:right">Shares<span class="resize-handle"></span></th>
+<th style="text-align:right">Entry<span class="resize-handle"></span></th>
+<th style="text-align:right">Cost<span class="resize-handle"></span></th>
+<th style="text-align:right">Value<span class="resize-handle"></span></th>
+<th style="text-align:right">P&amp;L</th>
+</tr></thead>
+<tbody>
+{{.PositionRows}}
+</tbody>
+</table>
+</div>
+</div>
+<div class="vdivider" id="vdivider"></div>
+<div class="panel panel-trades">
+<div class="panel-header">Balances <span class="count">{{.TradeCount}}</span>
+<a href="/csv" class="btn-csv" download="vagustrader_trades.csv">&#x2913; CSV</a></div>
+<div class="tbl-wrap">
+<table id="tbl-bal"><colgroup><col><col><col><col><col><col><col><col><col></colgroup>
+<thead><tr>
+<th>Date<span class="resize-handle"></span></th>
+<th><span class="resize-handle"></span></th>
+<th>Market<span class="resize-handle"></span></th>
+<th class="col-side">Side<span class="resize-handle"></span></th>
+<th style="text-align:right">Price<span class="resize-handle"></span></th>
+<th style="text-align:right">Invested<span class="resize-handle"></span></th>
+<th style="text-align:right">Recovered<span class="resize-handle"></span></th>
+<th style="text-align:right">Gain<span class="resize-handle"></span></th>
+<th style="text-align:center">Result</th>
+</tr></thead>
+<tbody>
+{{.BalanceRows}}
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="footer">
+<div class="snap-label">P&amp;L history &#x2192;</div>
+{{.SnapCells}}
+</div>
+<div id="source-popup" class="source-popup" style="display:none">
+  <div class="source-popup-header">Top Traders</div>
+  <div class="source-popup-body"></div>
+</div>
+<script src="/static/script.js"></script>
+<script>
+(function(){
+  var popup=document.getElementById('source-popup');
+  var body=popup.querySelector('.source-popup-body');
+  document.addEventListener('click',function(e){
+    var td=e.target.closest('td.side-source');
+    if(td){
+      var span=td.querySelector('[data-sources]');
+      if(span){
+        e.stopPropagation();
+        var src=JSON.parse(span.getAttribute('data-sources'));
+        if(!src||!src.length){popup.style.display='none';return;}
+        var h='<table class="source-tbl"><tr><th>Trader</th><th>Outcome</th><th>Size</th><th>Price</th></tr>';
+        src.forEach(function(s){
+          var name=s.name||s.address.slice(0,10)+'...';
+          h+='<tr><td class="src-name">'+name+'</td><td>'+s.outcome+'</td><td class="num">'+s.size.toFixed(2)+'</td><td class="num">'+s.price.toFixed(3)+'</td></tr>';
+        });
+        h+='</table>';
+        body.innerHTML=h;
+        var r=td.getBoundingClientRect();
+        popup.style.display='block';
+        popup.style.left=Math.min(r.left,window.innerWidth-320)+'px';
+        popup.style.top=(r.bottom+4)+'px';
+        return;
+      }
+    }
+    popup.style.display='none';
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,11 +1,15 @@
-FROM python:3.11-slim
-
+FROM golang:1.22-alpine AS build
+RUN apk add --no-cache gcc musl-dev
 WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o vagustrader ./cmd/vagustrader
 
-COPY pyproject.toml .
-COPY src/ src/
-
-RUN pip install --no-cache-dir -e .
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY --from=build /app/vagustrader /usr/local/bin/
+COPY config.yml /app/config.yml
+WORKDIR /app
 RUN mkdir -p data logs
-
-CMD ["polywin", "run"]
+CMD ["vagustrader", "run", "--paper"]
