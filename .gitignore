@@ -1,7 +1,7 @@
 .env
 data/
 logs/
-docs/
+docs/superpowers/
 *.db
 *.db-wal
 *.db-shm
