@@ -63,6 +63,7 @@ type PositionView struct {
 	CurrentValue float64
 	PnL          float64
 	HasPrice     bool
+	SourceJSON   string
 }
 
 type TradeView struct {
@@ -301,7 +302,12 @@ func query(dbPath string) *DashboardData {
 
 	posRows, err := db.Query(`
 		SELECT p.token_id, p.market_id, p.outcome, p.size, p.avg_price, p.updated_ts,
-		       COALESCE(m.question, '') AS question, COALESCE(m.slug, '') AS slug
+		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
+		       COALESCE((
+		           SELECT t.source_json FROM trades t
+		           WHERE t.token_id = p.token_id AND t.source_json IS NOT NULL AND t.source_json != ''
+		           ORDER BY t.ts DESC LIMIT 1
+		       ), '')
 		FROM positions p
 		LEFT JOIN market_meta m ON p.market_id = m.condition_id
 		ORDER BY p.updated_ts DESC
@@ -310,7 +316,7 @@ func query(dbPath string) *DashboardData {
 		defer posRows.Close()
 		for posRows.Next() {
 			var pv PositionView
-			if err := posRows.Scan(&pv.TokenID, &pv.MarketID, &pv.Outcome, &pv.Size, &pv.AvgPrice, &pv.UpdatedTs, &pv.Question, &pv.Slug); err != nil {
+			if err := posRows.Scan(&pv.TokenID, &pv.MarketID, &pv.Outcome, &pv.Size, &pv.AvgPrice, &pv.UpdatedTs, &pv.Question, &pv.Slug, &pv.SourceJSON); err != nil {
 				continue
 			}
 			pv.Cost = pv.Size * pv.AvgPrice
@@ -362,9 +368,10 @@ func query(dbPath string) *DashboardData {
 		       t.price, t.size_usdc,
 		       COALESCE(t.order_id, ''), t.paper, t.result,
 		       COALESCE(t.source_json, ''),
-		       COALESCE(m.question, '') AS question, COALESCE(m.slug, '') AS slug
+		       COALESCE(m.question, ''), COALESCE(m.slug, '')
 		FROM trades t
 		LEFT JOIN market_meta m ON t.market_id = m.condition_id
+		WHERE t.result IS NOT NULL
 		ORDER BY t.ts DESC LIMIT 500
 	`)
 	if err == nil {
@@ -422,7 +429,7 @@ func query(dbPath string) *DashboardData {
 
 	data.TotalPnL = data.RealizedPnL + data.UnrealizedPnL
 
-	data.PositionRows = renderPositionRows(data.Positions, data.CurrentValues)
+	data.PositionRows = renderPositionRows(data.Positions)
 	data.BalanceRows = renderBalanceRows(data.RecentTrades)
 	data.SnapCells = renderSnapCells(data.SnapshotsReversed)
 
@@ -527,40 +534,29 @@ func buildTemplate() *template.Template {
 	return tmpl
 }
 
-func renderPositionRows(positions []PositionView, currentValues map[string]float64) template.HTML {
+func renderPositionRows(positions []PositionView) template.HTML {
 	if len(positions) == 0 {
-		return `<tr><td colspan="7" class="empty">No open positions</td></tr>`
+		return `<tr><td colspan="5" class="empty">No open positions</td></tr>`
 	}
 	var b strings.Builder
 	for _, p := range positions {
 		cost := p.Size * p.AvgPrice
-		curPrice := currentValues[p.TokenID]
-		var valCell, pnlCell string
-		if curPrice > 0 {
-			curVal := p.Size * curPrice
-			pnl := curVal - cost
-			pnlClass := "val-pos"
-			if pnl < 0 {
-				pnlClass = "val-neg"
-			}
-			valCell = fmt.Sprintf(`<td class="num usd">$%.2f</td>`, curVal)
-			pnlCell = fmt.Sprintf(`<td class="num %s">$%+.2f</td>`, pnlClass, pnl)
-		} else {
-			valCell = `<td class="num dim">—</td>`
-			pnlCell = `<td class="num dim">—</td>`
-		}
 		badge := "badge-no"
-		if strings.EqualFold(p.Outcome, "yes") || strings.EqualFold(p.Outcome, "true") {
+		if strings.EqualFold(p.Outcome, "yes") || strings.EqualFold(p.Outcome, "true") || strings.EqualFold(p.Outcome, "over") || strings.EqualFold(p.Outcome, "buy") {
 			badge = "badge-yes"
+		}
+		sourceDataAttr := ""
+		if p.SourceJSON != "" && p.SourceJSON != "[]" {
+			sourceDataAttr = fmt.Sprintf(` data-sources='%s'`, p.SourceJSON)
 		}
 		marketLink := p.Question
 		if p.Slug != "" {
-			marketLink = fmt.Sprintf(`<a href="https://polymarket.com/market/%s" target="_blank" class="mkt-link">%s</a>`, p.Slug, truncate(p.Question, 42))
+			marketLink = fmt.Sprintf(`<a href="https://polymarket.com/market/%s" target="_blank" class="mkt-link">%s</a>`, p.Slug, truncate(p.Question, 48))
 		} else if p.Question == "" {
 			marketLink = `<span class="text-secondary">—</span>`
 		}
-		b.WriteString(fmt.Sprintf(`<tr><td class="mkt-cell">%s</td><td class="col-side"><span class="badge-outcome %s">%s</span></td><td class="num">%.2f</td><td class="num">%.3f</td><td class="num usd">$%.2f</td>%s%s</tr>`,
-			marketLink, badge, p.Outcome, p.Size, p.AvgPrice, cost, valCell, pnlCell))
+		b.WriteString(fmt.Sprintf(`<tr><td class="mkt-cell">%s</td><td class="col-side side-source"><span class="badge-outcome %s"%s>%s</span></td><td class="num">%.2f</td><td class="num">%.3f</td><td class="num usd">$%.2f</td></tr>`,
+			marketLink, badge, sourceDataAttr, p.Outcome, p.Size, p.AvgPrice, cost))
 	}
 	return template.HTML(b.String())
 }
