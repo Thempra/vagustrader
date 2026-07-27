@@ -18,8 +18,9 @@ services:
 
   dashboard:
     build: .
-    command: vagustrader dashboard
+    command: vagustrader dashboard --config /app/config.yml
     volumes:
+      - ./config.yml:/app/config.yml:ro
       - ./data:/app/data
     ports:
       - "18080:8080"

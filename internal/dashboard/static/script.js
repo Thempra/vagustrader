@@ -54,4 +54,87 @@
       dragging=false;document.removeEventListener('mousemove',onM);document.removeEventListener('mouseup',onU);
     }
   })();
+  (function(){
+    var sidebar=document.getElementById('sidebar');
+    var items=sidebar.querySelectorAll('.sidebar-item');
+    var views={
+      dashboard:document.getElementById('view-dashboard'),
+      statistics:document.getElementById('view-statistics'),
+      system:document.getElementById('view-system')
+    };
+    function switchView(name){
+      items.forEach(function(el){el.classList.toggle('active',el.getAttribute('data-view')===name);});
+      Object.keys(views).forEach(function(k){
+        var v=views[k];
+        if(k===name){v.style.display='flex';}else{v.style.display='none';}
+      });
+      localStorage.setItem('sidebarView',name);
+    }
+    items.forEach(function(el){
+      el.addEventListener('click',function(){switchView(el.getAttribute('data-view'));});
+    });
+    var savedView=localStorage.getItem('sidebarView');
+    if(savedView&&views[savedView]){switchView(savedView);}
+  })();
 })();
+
+Chart.defaults.color='#94a3b8';
+Chart.defaults.borderColor='#1e293b';
+Chart.defaults.font.family="'JetBrains Mono','ui-monospace',monospace";
+
+var cd=null;
+try{var el=document.getElementById('chart-data');if(el)cd=JSON.parse(el.textContent);}catch(e){}
+
+function initCharts(){
+  if(!cd)return;
+
+  if(cd.pnlLabels&&cd.pnlLabels.length){
+    new Chart(document.getElementById('chart-timeline'),{
+      type:'line',
+      data:{labels:cd.pnlLabels,datasets:[{label:'Realized P&L',data:cd.pnlData,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:'#3b82f6'}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#1e293b'}}}}
+    });
+  }
+
+  if(cd.trLabels&&cd.trLabels.length){
+    new Chart(document.getElementById('chart-traders'),{
+      type:'bar',
+      data:{labels:cd.trLabels,datasets:[{label:'P&L',data:cd.trPnL,backgroundColor:cd.trPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'#1e293b'}},y:{grid:{display:false}}}}
+    });
+  }
+
+  if(cd.wlData&&cd.wlData.length){
+    new Chart(document.getElementById('chart-winloss'),{
+      type:'doughnut',
+      data:{labels:['Wins','Losses'],datasets:[{data:cd.wlData,backgroundColor:['#22c55e','#ef4444'],borderWidth:0}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{padding:12,usePointStyle:true}}}}
+    });
+  }
+
+  if(cd.prLabels&&cd.prLabels.length){
+    new Chart(document.getElementById('chart-pricerange'),{
+      type:'bar',
+      data:{labels:cd.prLabels,datasets:[{label:'P&L',data:cd.prPnL,backgroundColor:cd.prPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#1e293b'}}}}
+    });
+  }
+
+  if(cd.dowLabels&&cd.dowLabels.length){
+    new Chart(document.getElementById('chart-dow'),{
+      type:'bar',
+      data:{labels:cd.dowLabels,datasets:[{label:'P&L',data:cd.dowPnL,backgroundColor:'#3b82f6',borderRadius:3}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#1e293b'}}}}
+    });
+  }
+
+  if(cd.hourLabels&&cd.hourLabels.length){
+    new Chart(document.getElementById('chart-hourly'),{
+      type:'bar',
+      data:{labels:cd.hourLabels,datasets:[{label:'P&L',data:cd.hourPnL,backgroundColor:cd.hourPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'#1e293b'}}}}
+    });
+  }
+}
+
+setTimeout(initCharts,100);
