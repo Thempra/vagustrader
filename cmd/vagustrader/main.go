@@ -176,7 +176,8 @@ var dashboardCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 		dbPath, _ := cmd.Flags().GetString("db")
-		dashboard.Serve(port, dbPath)
+		configPath, _ := cmd.Flags().GetString("config")
+		dashboard.Serve(port, dbPath, configPath)
 		return nil
 	},
 }
@@ -198,7 +199,7 @@ var deriveCredsCmd = &cobra.Command{
 			return fmt.Errorf("derive api key: %w", err)
 		}
 
-		fmt.Println("\nAdd these to your .env file:\n")
+		fmt.Println("\nAdd these to your .env file:")
 		fmt.Printf("CLOB_API_KEY=%s\n", creds.APIKey)
 		fmt.Printf("CLOB_API_SECRET=%s\n", creds.APISecret)
 		fmt.Printf("CLOB_API_PASSPHRASE=%s\n", creds.APIPassphrase)
@@ -321,6 +322,7 @@ func init() {
 
 	dashboardCmd.Flags().Int("port", 8080, "HTTP port to listen on")
 	dashboardCmd.Flags().String("db", "data/vagustrader.db", "Path to SQLite database")
+	dashboardCmd.Flags().String("config", "config.yml", "Path to config.yml")
 
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(statusCmd)

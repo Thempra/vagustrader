@@ -6,8 +6,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VagusTrader</title>
 <link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 <body>
+<div id="sidebar" class="sidebar">
+  <div class="sidebar-nav">
+    <div class="sidebar-item active" data-view="dashboard">Dashboard</div>
+    <div class="sidebar-item" data-view="statistics">Statistics</div>
+    <div class="sidebar-item" data-view="system">System</div>
+  </div>
+</div>
+<div id="main-area" class="main-area">
 <div class="header">
 <div class="brand">&#x2B21; VAGUSTRADER</div>
 <div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val blue">{{.PositionCount}} <span style="font-size:11px;color:var(--dim)">/ ${{.TotalCost | printf "%.0f"}}</span></div></div>
@@ -21,6 +30,7 @@
 <div class="kpi"><div class="kpi-label">Invested</div><div class="kpi-val blue">${{.InvestedToday | printf "%.2f"}}</div></div>
 <div class="clock">&#x27F3; {{.Now}}</div>
 </div>
+<div id="view-dashboard" class="view" style="display:flex">
 <div class="main">
 <div class="panel panel-positions">
 <div class="panel-header">Open Positions <span class="count">{{.PositionCount}}</span></div>
@@ -67,10 +77,90 @@
 <div class="snap-label">P&amp;L history &#x2192;</div>
 {{.SnapCells}}
 </div>
+</div>
+<div id="view-statistics" class="view" style="display:none">
+  <div class="view-scroll">
+    <div class="section">
+      <div class="section-title">Overview</div>
+      {{.StatsOverview}}
+    </div>
+    <div class="section">
+      <div class="section-title">P&amp;L Timeline</div>
+      <div class="chart-row">
+        <div class="chart-box"><canvas id="chart-timeline"></canvas></div>
+        <div class="perf-cards">
+          <div class="perf-card"><div class="perf-label">Avg Win</div><div class="perf-val val-pos">${{.PerfAvgWin | printf "+%.2f"}}</div></div>
+          <div class="perf-card"><div class="perf-label">Avg Loss</div><div class="perf-val val-neg">${{.PerfAvgLoss | printf "+%.2f"}}</div></div>
+          <div class="perf-card"><div class="perf-label">Profit Factor</div><div class="perf-val {{if ge .PerfProfitFactor 1.0}}val-pos{{else}}val-neg{{end}}">{{.PerfProfitFactor | printf "%.2f"}}</div></div>
+          <div class="perf-card"><div class="perf-label">Streak (W)</div><div class="perf-val val-pos">{{.PerfStreakWins}}</div></div>
+          <div class="perf-card"><div class="perf-label">Streak (L)</div><div class="perf-val val-neg">{{.PerfStreakLosses}}</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Copy Traders</div>
+      <div class="chart-box"><canvas id="chart-traders"></canvas></div>
+      <div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>Trader</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">Invested</th><th class="num">P&amp;L</th><th class="num">ROI</th></tr></thead><tbody>{{.TraderStatsRows}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Win / Loss</div>
+      <div class="chart-row">
+        <div class="chart-box chart-box-sm"><canvas id="chart-winloss"></canvas></div>
+        <div class="chart-box chart-box-sm"><canvas id="chart-pricerange"></canvas></div>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th>Price</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.PriceStatsRows}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Day of Week</div>
+      <div class="chart-box"><canvas id="chart-dow"></canvas></div>
+      <div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>Day</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.DowStatsRows}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Hourly</div>
+      <div class="chart-box"><canvas id="chart-hourly"></canvas></div>
+      <div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>Hour</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.HourStatsRows}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Market-Specific</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Market</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.MarketStatsRows}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Paper vs Live</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Mode</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.PaperLiveStatsRow}}</tbody></table></div>
+    </div>
+  </div>
+</div>
+<div id="view-system" class="view" style="display:none">
+  <div class="view-scroll">
+    <div class="section">
+      <div class="section-title">Configuration</div>
+      {{.ConfigHTML}}
+    </div>
+    <div class="section">
+      <div class="section-title">Runtime</div>
+      <table><tbody>
+        <tr><td class="info-label">Last Updated</td><td class="info-val">{{.LastUpdated}}</td></tr>
+        <tr><td class="info-label">Positions</td><td class="info-val">{{.PositionCount}}</td></tr>
+        <tr><td class="info-label">Settled Trades</td><td class="info-val">{{.TradeCount}}</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</div>
+</div>
 <div id="source-popup" class="source-popup" style="display:none">
   <div class="source-popup-header">Top Traders</div>
   <div class="source-popup-body"></div>
 </div>
+<script id="chart-data" type="application/json">
+{
+"pnlLabels":{{.PnLTimelineLabels}},"pnlData":{{.PnLTimelineData}},
+"trLabels":{{.TraderChartLabels}},"trPnL":{{.TraderChartPnL}},"trWins":{{.TraderChartWins}},
+"prLabels":{{.PriceChartLabels}},"prPnL":{{.PriceChartPnL}},
+"dowLabels":{{.DowChartLabels}},"dowPnL":{{.DowChartPnL}},
+"hourLabels":{{.HourChartLabels}},"hourPnL":{{.HourChartPnL}},
+"wlData":{{.WinLossData}}
+}
+</script>
 <script src="/static/script.js"></script>
 <script>
 (function(){

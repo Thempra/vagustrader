@@ -11,12 +11,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/vagustrader/vagustrader/internal/cfg"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -48,6 +53,37 @@ type DashboardData struct {
 	PositionRows template.HTML
 	BalanceRows  template.HTML
 	SnapCells    template.HTML
+
+	StatsOverview      template.HTML
+	TraderStatsRows    template.HTML
+	TraderDetailRows   template.HTML
+	PriceStatsRows     template.HTML
+	DowStatsRows       template.HTML
+	HourStatsRows      template.HTML
+	MarketStatsRows    template.HTML
+	PaperLiveStatsRow  template.HTML
+
+	PnLTimelineLabels  string
+	PnLTimelineData    string
+	TraderChartLabels   string
+	TraderChartPnL      string
+	TraderChartWins     string
+	PriceChartLabels    string
+	PriceChartPnL       string
+	DowChartLabels      string
+	DowChartPnL         string
+	HourChartLabels     string
+	HourChartPnL        string
+	WinLossData         string
+	PerfAvgWin          float64
+	PerfAvgLoss         float64
+	PerfProfitFactor    float64
+	PerfStreakWins      int
+	PerfStreakLosses    int
+
+	ConfigHTML  template.HTML
+	DBPath      string
+	LastUpdated string
 }
 
 type PositionView struct {
@@ -286,6 +322,8 @@ func backfillMeta(db *sql.DB) {
 	wg.Wait()
 }
 
+var configPath string
+
 func query(dbPath string) *DashboardData {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -432,6 +470,12 @@ func query(dbPath string) *DashboardData {
 	data.PositionRows = renderPositionRows(data.Positions)
 	data.BalanceRows = renderBalanceRows(data.RecentTrades)
 	data.SnapCells = renderSnapCells(data.SnapshotsReversed)
+
+	computeAndRenderStats(data)
+
+	data.DBPath = dbPath
+	data.LastUpdated = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+	data.ConfigHTML = readConfig(configPath)
 
 	return data
 }
@@ -633,6 +677,617 @@ func renderSnapCells(snapshots []SnapshotView) template.HTML {
 	return template.HTML(b.String())
 }
 
+type traderStat struct {
+	Address  string
+	Name     string
+	Trades   int
+	Wins     int
+	PnL      float64
+	Invested float64
+	Best     float64
+	Worst    float64
+}
+
+type outcomeStat struct {
+	Outcome string
+	Trades  int
+	Wins    int
+	PnL     float64
+}
+
+type bracketStat struct {
+	Bracket string
+	Trades  int
+	Wins    int
+	PnL     float64
+}
+
+type dowStat struct {
+	Day    string
+	Trades int
+	Wins   int
+	PnL    float64
+}
+
+type hourStat struct {
+	Hour   string
+	Trades int
+	Wins   int
+	PnL    float64
+}
+
+type marketStat struct {
+	Question string
+	Slug     string
+	Trades   int
+	Wins     int
+	PnL      float64
+}
+
+func gainFromTrade(t TradeView) float64 {
+	if !t.HasResult {
+		return 0
+	}
+	shares := t.SizeUSDC / t.Price
+	recovered := shares * t.Result.Float64
+	return recovered - t.SizeUSDC
+}
+
+func computeAndRenderStats(data *DashboardData) {
+	trades := data.RecentTrades
+	if len(trades) == 0 {
+		data.StatsOverview = template.HTML(`<div class="empty-state">No settled trades yet</div>`)
+		return
+	}
+
+	var totalInvested, totalRecovered float64
+	var winCount, lossCount int
+	var bestTrade, worstTrade float64
+	bestInit, worstInit := false, false
+	var sumWinGain, sumLossGain float64
+
+	traderMap := make(map[string]*traderStat)
+	bracketMap := make(map[string]*bracketStat)
+	dowMap := make(map[string]*dowStat)
+	hourMap := make(map[string]*hourStat)
+	marketMap := make(map[string]*marketStat)
+	var paperTrades, liveTrades, paperWins, liveWins int
+	var paperPnL, livePnL float64
+
+	for _, t := range trades {
+		gain := gainFromTrade(t)
+		shares := t.SizeUSDC / t.Price
+		recovered := shares * t.Result.Float64
+
+		totalInvested += t.SizeUSDC
+		totalRecovered += recovered
+
+		if gain >= 0 {
+			winCount++
+			sumWinGain += gain
+		} else {
+			lossCount++
+			sumLossGain += gain
+		}
+
+		if !bestInit || gain > bestTrade {
+			bestTrade = gain
+			bestInit = true
+		}
+		if !worstInit || gain < worstTrade {
+			worstTrade = gain
+			worstInit = true
+		}
+
+		if t.Paper {
+			paperTrades++
+			if gain >= 0 {
+				paperWins++
+			}
+			paperPnL += gain
+		} else {
+			liveTrades++
+			if gain >= 0 {
+				liveWins++
+			}
+			livePnL += gain
+		}
+
+		bracket := priceBracket(t.Price)
+		bc := bracketMap[bracket]
+		if bc == nil {
+			bc = &bracketStat{Bracket: bracket}
+			bracketMap[bracket] = bc
+		}
+		bc.Trades++
+		if gain >= 0 {
+			bc.Wins++
+		}
+		bc.PnL += gain
+
+		ts := time.Unix(t.Ts, 0).UTC()
+		dowName := ts.Weekday().String()
+		dc := dowMap[dowName]
+		if dc == nil {
+			dc = &dowStat{Day: dowName}
+			dowMap[dowName] = dc
+		}
+		dc.Trades++
+		if gain >= 0 {
+			dc.Wins++
+		}
+		dc.PnL += gain
+
+		hourBracket := hourBracketStr(ts.Hour())
+		hc := hourMap[hourBracket]
+		if hc == nil {
+			hc = &hourStat{Hour: hourBracket}
+			hourMap[hourBracket] = hc
+		}
+		hc.Trades++
+		if gain >= 0 {
+			hc.Wins++
+		}
+		hc.PnL += gain
+
+		marketKey := t.MarketID
+		mc := marketMap[marketKey]
+		if mc == nil {
+			mc = &marketStat{Question: t.Question, Slug: t.Slug}
+			marketMap[marketKey] = mc
+		}
+		mc.Trades++
+		if gain >= 0 {
+			mc.Wins++
+		}
+		mc.PnL += gain
+
+		if t.SourceJSON != "" && t.SourceJSON != "[]" {
+			var sources []struct {
+				Address string  `json:"address"`
+				Name    string  `json:"name"`
+				Outcome string  `json:"outcome"`
+				Size    float64 `json:"size"`
+				Price   float64 `json:"price"`
+			}
+			if err := json.Unmarshal([]byte(t.SourceJSON), &sources); err == nil && len(sources) > 0 {
+				splitPnL := gain / float64(len(sources))
+				splitInv := t.SizeUSDC / float64(len(sources))
+				for _, s := range sources {
+					tc := traderMap[s.Address]
+					if tc == nil {
+						tc = &traderStat{Address: s.Address, Name: s.Name}
+						traderMap[s.Address] = tc
+					}
+					if tc.Name == "" && s.Name != "" {
+						tc.Name = s.Name
+					}
+					tc.Trades++
+					tc.Invested += splitInv
+					if gain >= 0 {
+						tc.Wins++
+					}
+					tc.PnL += splitPnL
+					if tc.Best == 0 || splitPnL > tc.Best {
+						tc.Best = splitPnL
+					}
+					if tc.Worst == 0 || splitPnL < tc.Worst {
+						tc.Worst = splitPnL
+					}
+				}
+			}
+		}
+	}
+
+	totalSettled := winCount + lossCount
+	winRate := 0.0
+	if totalSettled > 0 {
+		winRate = float64(winCount) / float64(totalSettled) * 100
+	}
+	avgGain := 0.0
+	if totalSettled > 0 {
+		avgGain = (totalRecovered - totalInvested) / float64(totalSettled)
+	}
+
+	data.PerfAvgWin = 0
+	if winCount > 0 {
+		data.PerfAvgWin = sumWinGain / float64(winCount)
+	}
+	data.PerfAvgLoss = 0
+	if lossCount > 0 {
+		data.PerfAvgLoss = sumLossGain / float64(lossCount)
+	}
+	data.PerfProfitFactor = 0
+	if sumLossGain < 0 {
+		data.PerfProfitFactor = sumWinGain / -sumLossGain
+	}
+
+	data.PerfStreakWins = 0
+	data.PerfStreakLosses = 0
+	curWin, curLoss := 0, 0
+	for _, t := range trades {
+		gain := gainFromTrade(t)
+		if gain >= 0 {
+			curWin++
+			curLoss = 0
+			if curWin > data.PerfStreakWins {
+				data.PerfStreakWins = curWin
+			}
+		} else {
+			curLoss++
+			curWin = 0
+			if curLoss > data.PerfStreakLosses {
+				data.PerfStreakLosses = curLoss
+			}
+		}
+	}
+
+	overviewHTML := fmt.Sprintf(`
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-label">Total Invested</div><div class="stat-val usd">$%.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Total Recovered</div><div class="stat-val usd">$%.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Realized P&amp;L</div><div class="stat-val %s">$%+.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-val %s">%d/%d (%.1f%%)</div></div>
+  <div class="stat-card"><div class="stat-label">Best Trade</div><div class="stat-val val-pos">$%+.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Worst Trade</div><div class="stat-val val-neg">$%+.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Avg Gain/Trade</div><div class="stat-val %s">$%+.2f</div></div>
+  <div class="stat-card"><div class="stat-label">Total Settled</div><div class="stat-val blue">%d</div></div>
+</div>`,
+		totalInvested, totalRecovered,
+		pnlClass(totalRecovered-totalInvested), totalRecovered-totalInvested,
+		pnlClass(float64(winCount-lossCount)), winCount, totalSettled, winRate,
+		bestTrade, worstTrade,
+		pnlClass(avgGain), avgGain, totalSettled)
+	data.StatsOverview = template.HTML(overviewHTML)
+
+	// ── Trader table ──
+	var traderList []*traderStat
+	for _, tc := range traderMap {
+		traderList = append(traderList, tc)
+	}
+	sort.Slice(traderList, func(i, j int) bool {
+		return traderList[i].PnL > traderList[j].PnL
+	})
+	if len(traderList) > 20 {
+		traderList = traderList[:20]
+	}
+	var traderSB strings.Builder
+	if len(traderList) == 0 {
+		traderSB.WriteString(`<tr><td colspan="7" class="empty">No source trader data</td></tr>`)
+	} else {
+		for _, tc := range traderList {
+			wr := 0.0
+			if tc.Trades > 0 {
+				wr = float64(tc.Wins) / float64(tc.Trades) * 100
+			}
+			pnlCls := "val-pos"
+			if tc.PnL < 0 {
+				pnlCls = "val-neg"
+			}
+			name := tc.Name
+			if name == "" {
+				name = tc.Address
+				if len(name) > 14 {
+					name = name[:6] + "\u2026" + name[len(name)-4:]
+				}
+			}
+			roi := 0.0
+			if tc.Invested > 0 {
+				roi = tc.PnL / tc.Invested * 100
+			}
+			traderSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num usd">$%.2f</td><td class="num %s">$%+.2f</td><td class="num">%.1f%%</td></tr>`,
+				name, tc.Trades, tc.Wins, wr, tc.Invested, pnlCls, tc.PnL, roi))
+		}
+	}
+	data.TraderStatsRows = template.HTML(traderSB.String())
+
+	// ── Trader detail rows (for the trader detail sub-table) ──
+	var detailSB strings.Builder
+	if len(traderList) == 0 {
+		detailSB.WriteString(`<tr><td colspan="5" class="empty">No data</td></tr>`)
+	} else {
+		for _, tc := range traderList {
+			name := tc.Name
+			if name == "" {
+				name = tc.Address
+				if len(name) > 14 {
+					name = name[:6] + "\u2026" + name[len(name)-4:]
+				}
+			}
+			wr := 0.0
+			if tc.Trades > 0 {
+				wr = float64(tc.Wins) / float64(tc.Trades) * 100
+			}
+			pnlCls := "val-pos"
+			if tc.PnL < 0 {
+				pnlCls = "val-neg"
+			}
+			detailSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td><td class="num val-pos">$%+.2f</td></tr>`,
+				name, tc.Trades, wr, pnlCls, tc.PnL, tc.Best))
+		}
+	}
+	data.TraderDetailRows = template.HTML(detailSB.String())
+
+	// ── Price bracket table ──
+	bracketOrder := []string{"0.00-0.20", "0.20-0.40", "0.40-0.60", "0.60-0.80", "0.80-1.00"}
+	var priceSB strings.Builder
+	for _, br := range bracketOrder {
+		bc := bracketMap[br]
+		if bc == nil {
+			continue
+		}
+		wr := 0.0
+		if bc.Trades > 0 {
+			wr = float64(bc.Wins) / float64(bc.Trades) * 100
+		}
+		pnlCls := "val-pos"
+		if bc.PnL < 0 {
+			pnlCls = "val-neg"
+		}
+		priceSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+			br, bc.Trades, bc.Wins, wr, pnlCls, bc.PnL))
+	}
+	data.PriceStatsRows = template.HTML(priceSB.String())
+
+	// ── Day of week table ──
+	dowOrder := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+	var dowSB strings.Builder
+	for _, d := range dowOrder {
+		dc := dowMap[d]
+		if dc == nil {
+			continue
+		}
+		wr := 0.0
+		if dc.Trades > 0 {
+			wr = float64(dc.Wins) / float64(dc.Trades) * 100
+		}
+		pnlCls := "val-pos"
+		if dc.PnL < 0 {
+			pnlCls = "val-neg"
+		}
+		dowSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+			d[:3], dc.Trades, dc.Wins, wr, pnlCls, dc.PnL))
+	}
+	data.DowStatsRows = template.HTML(dowSB.String())
+
+	// ── Hour table ──
+	hourOrder := []string{"00-03", "04-07", "08-11", "12-15", "16-19", "20-23"}
+	var hourSB strings.Builder
+	for _, h := range hourOrder {
+		hc := hourMap[h]
+		if hc == nil {
+			continue
+		}
+		wr := 0.0
+		if hc.Trades > 0 {
+			wr = float64(hc.Wins) / float64(hc.Trades) * 100
+		}
+		pnlCls := "val-pos"
+		if hc.PnL < 0 {
+			pnlCls = "val-neg"
+		}
+		hourSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+			h, hc.Trades, hc.Wins, wr, pnlCls, hc.PnL))
+	}
+	data.HourStatsRows = template.HTML(hourSB.String())
+
+	// ── Market table ──
+	var marketList []*marketStat
+	for _, mc := range marketMap {
+		marketList = append(marketList, mc)
+	}
+	sort.Slice(marketList, func(i, j int) bool {
+		return marketList[i].PnL > marketList[j].PnL
+	})
+	if len(marketList) > 30 {
+		marketList = marketList[:30]
+	}
+	var marketSB strings.Builder
+	for _, mc := range marketList {
+		wr := 0.0
+		if mc.Trades > 0 {
+			wr = float64(mc.Wins) / float64(mc.Trades) * 100
+		}
+		pnlCls := "val-pos"
+		if mc.PnL < 0 {
+			pnlCls = "val-neg"
+		}
+		label := mc.Question
+		if len(label) > 50 {
+			label = label[:50] + "\u2026"
+		}
+		marketSB.WriteString(fmt.Sprintf(`<tr><td class="mkt-cell">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+			label, mc.Trades, mc.Wins, wr, pnlCls, mc.PnL))
+	}
+	data.MarketStatsRows = template.HTML(marketSB.String())
+
+	// ── Paper vs Live ──
+	paperWr := 0.0
+	if paperTrades > 0 {
+		paperWr = float64(paperWins) / float64(paperTrades) * 100
+	}
+	liveWr := 0.0
+	if liveTrades > 0 {
+		liveWr = float64(liveWins) / float64(liveTrades) * 100
+	}
+	paperPnLCls := "val-pos"
+	if paperPnL < 0 {
+		paperPnLCls = "val-neg"
+	}
+	livePnLCls := "val-pos"
+	if livePnL < 0 {
+		livePnLCls = "val-neg"
+	}
+	data.PaperLiveStatsRow = template.HTML(fmt.Sprintf(`
+<tr><td><span class="mode-paper">PAPER</span></td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>
+<tr><td><span class="mode-live">LIVE</span></td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+		paperTrades, paperWins, paperWr, paperPnLCls, paperPnL,
+		liveTrades, liveWins, liveWr, livePnLCls, livePnL))
+
+	// ── Chart.js JSON data ──
+
+	// PnL timeline from snapshots
+	if len(data.SnapshotsReversed) > 0 {
+		var labels, values []string
+		for _, s := range data.SnapshotsReversed {
+			labels = append(labels, s.DateShort)
+			values = append(values, fmt.Sprintf("%.2f", s.Realized))
+		}
+		data.PnLTimelineLabels = "[" + strings.Join(mapQuoted(labels), ",") + "]"
+		data.PnLTimelineData = "[" + strings.Join(values, ",") + "]"
+	} else {
+		data.PnLTimelineLabels = "[]"
+		data.PnLTimelineData = "[]"
+	}
+
+	// Trader chart
+	if len(traderList) > 0 {
+		var names, pnls, wins []string
+		for _, tc := range traderList {
+			n := tc.Name
+			if n == "" {
+				n = "0x" + tc.Address[:min(6, len(tc.Address))]
+			}
+			names = append(names, fmt.Sprintf("%q", n))
+			pnls = append(pnls, fmt.Sprintf("%.2f", tc.PnL))
+			wins = append(wins, fmt.Sprintf("%d", tc.Wins))
+		}
+		data.TraderChartLabels = "[" + strings.Join(names, ",") + "]"
+		data.TraderChartPnL = "[" + strings.Join(pnls, ",") + "]"
+		data.TraderChartWins = "[" + strings.Join(wins, ",") + "]"
+	} else {
+		data.TraderChartLabels = "[]"
+		data.TraderChartPnL = "[]"
+		data.TraderChartWins = "[]"
+	}
+
+	// Price bracket chart
+	var priceLabels, pricePnLs []string
+	for _, br := range bracketOrder {
+		bc := bracketMap[br]
+		if bc == nil {
+			continue
+		}
+		priceLabels = append(priceLabels, fmt.Sprintf("%q", br))
+		pricePnLs = append(pricePnLs, fmt.Sprintf("%.2f", bc.PnL))
+	}
+	data.PriceChartLabels = "[" + strings.Join(priceLabels, ",") + "]"
+	data.PriceChartPnL = "[" + strings.Join(pricePnLs, ",") + "]"
+
+	// DOW chart
+	var dowLabels, dowPnLs []string
+	for _, d := range dowOrder {
+		dc := dowMap[d]
+		if dc == nil {
+			continue
+		}
+		dowLabels = append(dowLabels, fmt.Sprintf("%q", d[:3]))
+		dowPnLs = append(dowPnLs, fmt.Sprintf("%.2f", dc.PnL))
+	}
+	data.DowChartLabels = "[" + strings.Join(dowLabels, ",") + "]"
+	data.DowChartPnL = "[" + strings.Join(dowPnLs, ",") + "]"
+
+	// Hour chart
+	var hourLabels, hourPnLs []string
+	for _, h := range hourOrder {
+		hc := hourMap[h]
+		if hc == nil {
+			continue
+		}
+		hourLabels = append(hourLabels, fmt.Sprintf("%q", h))
+		hourPnLs = append(hourPnLs, fmt.Sprintf("%.2f", hc.PnL))
+	}
+	data.HourChartLabels = "[" + strings.Join(hourLabels, ",") + "]"
+	data.HourChartPnL = "[" + strings.Join(hourPnLs, ",") + "]"
+
+	// Win/Loss doughnut
+	data.WinLossData = fmt.Sprintf("[%d,%d]", winCount, lossCount)
+}
+
+func mapQuoted(s []string) []string {
+	out := make([]string, len(s))
+	for i, v := range s {
+		out[i] = fmt.Sprintf("%q", v)
+	}
+	return out
+}
+
+func priceBracket(price float64) string {
+	switch {
+	case price < 0.20:
+		return "0.00-0.20"
+	case price < 0.40:
+		return "0.20-0.40"
+	case price < 0.60:
+		return "0.40-0.60"
+	case price < 0.80:
+		return "0.60-0.80"
+	default:
+		return "0.80-1.00"
+	}
+}
+
+func hourBracketStr(h int) string {
+	switch {
+	case h < 4:
+		return "00-03"
+	case h < 8:
+		return "04-07"
+	case h < 12:
+		return "08-11"
+	case h < 16:
+		return "12-15"
+	case h < 20:
+		return "16-19"
+	default:
+		return "20-23"
+	}
+}
+
+func readConfig(path string) template.HTML {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return template.HTML(fmt.Sprintf(`<div class="config-err">Cannot read config: %v</div>`, err))
+	}
+
+	var appCfg cfg.AppConfig
+	if err := yaml.Unmarshal(data, &appCfg); err != nil {
+		appCfg = cfg.AppConfig{
+			Risk:       cfg.RiskConfig{MaxPositionUSDC: 50, MaxOpenPositions: 10, DailyLossLimitUSDC: 200},
+			Markets:    cfg.MarketsConfig{MinLiquidityUSDC: 5000},
+			Strategies: cfg.StrategiesConfig{CopyTrading: cfg.CopyTradingConfig{Enabled: true, PollIntervalSeconds: 300, MinPnL: 10000, MinVolumeUSD: 10000, PriceGuard: 0.05, MaxCopyPerTrader: 3, MaxDaysToResolution: 0}},
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(`<div class="config-sections">`)
+
+	b.WriteString(`<div class="config-group"><div class="config-group-title"><span class="cfg-icon">&#x26A0;</span> Risk</div>`)
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Max Position</span><span class="cfg-val">$%.0f</span></div>`, appCfg.Risk.MaxPositionUSDC))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Max Open Positions</span><span class="cfg-val">%d</span></div>`, appCfg.Risk.MaxOpenPositions))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Daily Loss Limit</span><span class="cfg-val">$%.0f</span></div>`, appCfg.Risk.DailyLossLimitUSDC))
+	b.WriteString(`</div>`)
+
+	b.WriteString(`<div class="config-group"><div class="config-group-title"><span class="cfg-icon">&#x1F4CA;</span> Markets</div>`)
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Min Liquidity</span><span class="cfg-val">$%.0f</span></div>`, appCfg.Markets.MinLiquidityUSDC))
+	b.WriteString(`</div>`)
+
+	b.WriteString(`<div class="config-group"><div class="config-group-title"><span class="cfg-icon">&#x1F504;</span> Copy Trading</div>`)
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Enabled</span><span class="cfg-val">%t</span></div>`, appCfg.Strategies.CopyTrading.Enabled))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Poll Interval</span><span class="cfg-val">%ds</span></div>`, appCfg.Strategies.CopyTrading.PollIntervalSeconds))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Min P&amp;L</span><span class="cfg-val">$%.0f</span></div>`, appCfg.Strategies.CopyTrading.MinPnL))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Min Volume</span><span class="cfg-val">$%.0f</span></div>`, appCfg.Strategies.CopyTrading.MinVolumeUSD))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Price Guard</span><span class="cfg-val">%.2f</span></div>`, appCfg.Strategies.CopyTrading.PriceGuard))
+	b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Max Copy/Trader</span><span class="cfg-val">%d</span></div>`, appCfg.Strategies.CopyTrading.MaxCopyPerTrader))
+	if appCfg.Strategies.CopyTrading.MaxDaysToResolution > 0 {
+		b.WriteString(fmt.Sprintf(`<div class="config-row"><span class="cfg-label">Max Days to Res.</span><span class="cfg-val">%d</span></div>`, int(appCfg.Strategies.CopyTrading.MaxDaysToResolution)))
+	}
+	b.WriteString(`</div>`)
+
+	b.WriteString(`</div>`)
+	return template.HTML(b.String())
+}
+
 func buildCSV(data *DashboardData) []byte {
 	var buf bytes.Buffer
 	cw := csv.NewWriter(&buf)
@@ -710,7 +1365,8 @@ func backgroundRefresh(dbPath string, tmpl *template.Template) {
 	}
 }
 
-func Serve(port int, dbPath string) {
+func Serve(port int, dbPath string, cfgPath string) {
+	configPath = cfgPath
 	tmpl := buildTemplate()
 
 	go backgroundRefresh(dbPath, tmpl)
