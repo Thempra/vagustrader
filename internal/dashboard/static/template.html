@@ -151,15 +151,8 @@
   <div class="source-popup-header">Top Traders</div>
   <div class="source-popup-body"></div>
 </div>
-<script id="chart-data" type="application/json">
-{
-"pnlLabels":{{.PnLTimelineLabels}},"pnlData":{{.PnLTimelineData}},
-"trLabels":{{.TraderChartLabels}},"trPnL":{{.TraderChartPnL}},"trWins":{{.TraderChartWins}},
-"prLabels":{{.PriceChartLabels}},"prPnL":{{.PriceChartPnL}},
-"dowLabels":{{.DowChartLabels}},"dowPnL":{{.DowChartPnL}},
-"hourLabels":{{.HourChartLabels}},"hourPnL":{{.HourChartPnL}},
-"wlData":{{.WinLossData}}
-}
+<script>
+var _cd={pnlLabels:{{.PnLTimelineLabels}},pnlData:{{.PnLTimelineData}},trLabels:{{.TraderChartLabels}},trPnL:{{.TraderChartPnL}},trWins:{{.TraderChartWins}},prLabels:{{.PriceChartLabels}},prPnL:{{.PriceChartPnL}},dowLabels:{{.DowChartLabels}},dowPnL:{{.DowChartPnL}},hourLabels:{{.HourChartLabels}},hourPnL:{{.HourChartPnL}},wlData:{{.WinLossData}}};
 </script>
 <script src="/static/script.js"></script>
 <script>
