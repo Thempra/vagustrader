@@ -82,8 +82,7 @@ Chart.defaults.color='#94a3b8';
 Chart.defaults.borderColor='#1e293b';
 Chart.defaults.font.family="'JetBrains Mono','ui-monospace',monospace";
 
-var cd=null;
-try{var el=document.getElementById('chart-data');if(el)cd=JSON.parse(el.textContent);}catch(e){}
+var cd=typeof _cd!=='undefined'?_cd:null;
 
 function initCharts(){
   if(!cd)return;

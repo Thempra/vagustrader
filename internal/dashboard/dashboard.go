@@ -63,18 +63,18 @@ type DashboardData struct {
 	MarketStatsRows    template.HTML
 	PaperLiveStatsRow  template.HTML
 
-	PnLTimelineLabels  string
-	PnLTimelineData    string
-	TraderChartLabels   string
-	TraderChartPnL      string
-	TraderChartWins     string
-	PriceChartLabels    string
-	PriceChartPnL       string
-	DowChartLabels      string
-	DowChartPnL         string
-	HourChartLabels     string
-	HourChartPnL        string
-	WinLossData         string
+	PnLTimelineLabels  template.JS
+	PnLTimelineData    template.JS
+	TraderChartLabels   template.JS
+	TraderChartPnL      template.JS
+	TraderChartWins     template.JS
+	PriceChartLabels    template.JS
+	PriceChartPnL       template.JS
+	DowChartLabels      template.JS
+	DowChartPnL         template.JS
+	HourChartLabels     template.JS
+	HourChartPnL        template.JS
+	WinLossData         template.JS
 	PerfAvgWin          float64
 	PerfAvgLoss         float64
 	PerfProfitFactor    float64
@@ -1133,11 +1133,11 @@ func computeAndRenderStats(data *DashboardData) {
 			labels = append(labels, s.DateShort)
 			values = append(values, fmt.Sprintf("%.2f", s.Realized))
 		}
-		data.PnLTimelineLabels = "[" + strings.Join(mapQuoted(labels), ",") + "]"
-		data.PnLTimelineData = "[" + strings.Join(values, ",") + "]"
+		data.PnLTimelineLabels = template.JS("[" + strings.Join(mapQuoted(labels), ",") + "]")
+		data.PnLTimelineData = template.JS("[" + strings.Join(values, ",") + "]")
 	} else {
-		data.PnLTimelineLabels = "[]"
-		data.PnLTimelineData = "[]"
+		data.PnLTimelineLabels = template.JS("[]")
+		data.PnLTimelineData = template.JS("[]")
 	}
 
 	// Trader chart
@@ -1152,13 +1152,13 @@ func computeAndRenderStats(data *DashboardData) {
 			pnls = append(pnls, fmt.Sprintf("%.2f", tc.PnL))
 			wins = append(wins, fmt.Sprintf("%d", tc.Wins))
 		}
-		data.TraderChartLabels = "[" + strings.Join(names, ",") + "]"
-		data.TraderChartPnL = "[" + strings.Join(pnls, ",") + "]"
-		data.TraderChartWins = "[" + strings.Join(wins, ",") + "]"
+		data.TraderChartLabels = template.JS("[" + strings.Join(names, ",") + "]")
+		data.TraderChartPnL = template.JS("[" + strings.Join(pnls, ",") + "]")
+		data.TraderChartWins = template.JS("[" + strings.Join(wins, ",") + "]")
 	} else {
-		data.TraderChartLabels = "[]"
-		data.TraderChartPnL = "[]"
-		data.TraderChartWins = "[]"
+		data.TraderChartLabels = template.JS("[]")
+		data.TraderChartPnL = template.JS("[]")
+		data.TraderChartWins = template.JS("[]")
 	}
 
 	// Price bracket chart
@@ -1171,8 +1171,8 @@ func computeAndRenderStats(data *DashboardData) {
 		priceLabels = append(priceLabels, fmt.Sprintf("%q", br))
 		pricePnLs = append(pricePnLs, fmt.Sprintf("%.2f", bc.PnL))
 	}
-	data.PriceChartLabels = "[" + strings.Join(priceLabels, ",") + "]"
-	data.PriceChartPnL = "[" + strings.Join(pricePnLs, ",") + "]"
+	data.PriceChartLabels = template.JS("[" + strings.Join(priceLabels, ",") + "]")
+	data.PriceChartPnL = template.JS("[" + strings.Join(pricePnLs, ",") + "]")
 
 	// DOW chart
 	var dowLabels, dowPnLs []string
@@ -1184,8 +1184,8 @@ func computeAndRenderStats(data *DashboardData) {
 		dowLabels = append(dowLabels, fmt.Sprintf("%q", d[:3]))
 		dowPnLs = append(dowPnLs, fmt.Sprintf("%.2f", dc.PnL))
 	}
-	data.DowChartLabels = "[" + strings.Join(dowLabels, ",") + "]"
-	data.DowChartPnL = "[" + strings.Join(dowPnLs, ",") + "]"
+	data.DowChartLabels = template.JS("[" + strings.Join(dowLabels, ",") + "]")
+	data.DowChartPnL = template.JS("[" + strings.Join(dowPnLs, ",") + "]")
 
 	// Hour chart
 	var hourLabels, hourPnLs []string
@@ -1197,11 +1197,11 @@ func computeAndRenderStats(data *DashboardData) {
 		hourLabels = append(hourLabels, fmt.Sprintf("%q", h))
 		hourPnLs = append(hourPnLs, fmt.Sprintf("%.2f", hc.PnL))
 	}
-	data.HourChartLabels = "[" + strings.Join(hourLabels, ",") + "]"
-	data.HourChartPnL = "[" + strings.Join(hourPnLs, ",") + "]"
+	data.HourChartLabels = template.JS("[" + strings.Join(hourLabels, ",") + "]")
+	data.HourChartPnL = template.JS("[" + strings.Join(hourPnLs, ",") + "]")
 
 	// Win/Loss doughnut
-	data.WinLossData = fmt.Sprintf("[%d,%d]", winCount, lossCount)
+	data.WinLossData = template.JS(fmt.Sprintf("[%d,%d]", winCount, lossCount))
 }
 
 func mapQuoted(s []string) []string {
