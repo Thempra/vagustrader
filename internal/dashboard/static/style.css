@@ -1,7 +1,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0a0e17;--bg2:#111827;--bg3:#1a2234;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--accent:#3b82f6;--green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--font:'JetBrains Mono',ui-monospace,monospace}
 html,body{height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px}
-body{display:flex;flex-direction:column;gap:0}
+body{display:flex;flex-direction:row;gap:0}
 .header{flex:0 0 auto;background:var(--bg2);border-bottom:1px solid var(--border);padding:6px 16px;display:flex;align-items:center;gap:20px}
 .main{flex:1 1 0;min-height:0;display:flex;gap:1px;background:var(--border)}
 .panel{background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
@@ -66,15 +66,14 @@ a.mkt-link:hover{color:var(--accent);text-decoration:underline}
 .source-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
 
 /* ── Layout: sidebar + main-area ── */
-body{flex-direction:row}
-.sidebar{flex:0 0 4px;background:var(--bg2);border-right:1px solid var(--border);overflow:hidden;transition:flex .15s ease;cursor:default;display:flex;flex-direction:column;padding:0}
-.sidebar:hover{flex:0 0 160px;padding:0}
+.sidebar{position:fixed;top:0;left:0;bottom:0;width:4px;background:var(--bg2);border-right:1px solid var(--border);overflow:hidden;transition:width .15s ease;cursor:default;display:flex;flex-direction:column;padding:0;z-index:100}
+.sidebar:hover{width:160px;padding:0}
 .sidebar-nav{display:flex;flex-direction:column;gap:2px;padding:0;opacity:0;transition:opacity .1s ease;min-width:160px;padding-top:8px}
 .sidebar:hover .sidebar-nav{opacity:1}
 .sidebar-item{padding:8px 14px;font-size:12px;color:var(--dim);cursor:pointer;letter-spacing:.04em;text-transform:uppercase;border-left:2px solid transparent;transition:color .1s,border-color .1s,background .1s;white-space:nowrap}
 .sidebar-item:hover{color:var(--text);background:var(--bg3)}
 .sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--bg3)}
-.main-area{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.main-area{margin-left:4px;flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
 
 /* ── View visibility ── */
 .view{flex:1;display:none;overflow:hidden;flex-direction:column}

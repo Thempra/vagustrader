@@ -1373,7 +1373,11 @@ func Serve(port int, dbPath string, cfgPath string) {
 
 	time.Sleep(2 * time.Second)
 
-	http.Handle("/static/", http.FileServer(http.FS(staticFS)))
+	fs := http.FileServer(http.FS(staticFS))
+	http.Handle("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		fs.ServeHTTP(w, r)
+	}))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
