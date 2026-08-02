@@ -71,10 +71,12 @@
       localStorage.setItem('sidebarView',name);
     }
     items.forEach(function(el){
-      el.addEventListener('click',function(){switchView(el.getAttribute('data-view'));});
+      el.addEventListener('click',function(){switchView(el.getAttribute('data-view'));sidebar.classList.remove('open');});
     });
     var savedView=localStorage.getItem('sidebarView');
     if(savedView&&views[savedView]){switchView(savedView);}
+    document.querySelector('.brand').addEventListener('click',function(e){e.stopPropagation();sidebar.classList.toggle('open');});
+    document.addEventListener('click',function(e){if(!sidebar.contains(e.target))sidebar.classList.remove('open');});
   })();
 })();
 
