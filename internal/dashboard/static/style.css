@@ -67,9 +67,9 @@ a.mkt-link:hover{color:var(--accent);text-decoration:underline}
 
 /* ── Layout: sidebar + main-area ── */
 .sidebar{position:fixed;top:0;left:0;bottom:0;width:4px;background:var(--bg2);border-right:1px solid var(--border);overflow:hidden;transition:width .15s ease;cursor:default;display:flex;flex-direction:column;padding:0;z-index:100}
-.sidebar:hover{width:160px;padding:0}
+.sidebar:hover,.sidebar.open{width:160px;padding:0}
 .sidebar-nav{display:flex;flex-direction:column;gap:2px;padding:0;opacity:0;transition:opacity .1s ease;min-width:160px;padding-top:8px}
-.sidebar:hover .sidebar-nav{opacity:1}
+.sidebar:hover .sidebar-nav,.sidebar.open .sidebar-nav{opacity:1}
 .sidebar-item{padding:8px 14px;font-size:12px;color:var(--dim);cursor:pointer;letter-spacing:.04em;text-transform:uppercase;border-left:2px solid transparent;transition:color .1s,border-color .1s,background .1s;white-space:nowrap}
 .sidebar-item:hover{color:var(--text);background:var(--bg3)}
 .sidebar-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--bg3)}
