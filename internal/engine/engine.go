@@ -53,6 +53,10 @@ func (e *Engine) Start(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if e.settings.ClobDepositWallet != "" {
+			clobClient.(*clob.ClobClient).DepositWallet = e.settings.ClobDepositWallet
+			slog.Info("POLY_1271 deposit wallet", "addr", e.settings.ClobDepositWallet)
+		}
 		slog.Info("Live trading mode")
 	}
 
@@ -94,22 +98,31 @@ func (e *Engine) Start(ctx context.Context) error {
 
 func (e *Engine) resolveCreds() (*clob.ClobCreds, error) {
 	if e.settings.ClobAPIKey != "" {
-		return &clob.ClobCreds{
+		creds := &clob.ClobCreds{
 			APIKey:        e.settings.ClobAPIKey,
 			APISecret:     e.settings.ClobAPISecret,
 			APIPassphrase: e.settings.ClobAPIPassphrase,
-		}, nil
+			Address:       e.settings.ClobAddress,
+		}
+		slog.Info("CLOB creds loaded from env", "address", creds.Address, "api_key", creds.APIKey[:8]+"...")
+		return creds, nil
 	}
 	slog.Info("Deriving CLOB credentials from private key")
 	signer, err := clob.NewSigner(e.settings.PrivateKey, e.settings.ChainID)
 	if err != nil {
 		return nil, err
 	}
-	creds, err := clob.DeriveAPIKeyFromSigner(signer, e.settings.ClobHost)
+	slog.Info("Signer address derived", "address", signer.Address())
+	targetAddr := signer.Address()
+	if e.settings.ClobDepositWallet != "" {
+		targetAddr = e.settings.ClobDepositWallet
+		slog.Info("Using deposit wallet for API key binding", "deposit_wallet", targetAddr)
+	}
+	creds, err := clob.DeriveAPIKeyForWallet(signer, e.settings.ClobHost, targetAddr)
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("CLOB creds derived", "api_key", creds.APIKey[:8]+"...")
+	slog.Info("CLOB creds derived", "address", targetAddr, "api_key", creds.APIKey[:8]+"...", "secret_len", len(creds.APISecret), "passphrase_len", len(creds.APIPassphrase))
 	return creds, nil
 }
 

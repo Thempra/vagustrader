@@ -37,7 +37,8 @@ type DashboardData struct {
 	CurrentValues     map[string]float64
 
 	PositionCount int
-	TradeCount    int
+	TradeCount      int
+	TradeDisplayed  int
 	TotalCost     float64
 	RealizedPnL   float64
 	UnrealizedPnL float64
@@ -410,7 +411,7 @@ func query(dbPath string) *DashboardData {
 		FROM trades t
 		LEFT JOIN market_meta m ON t.market_id = m.condition_id
 		WHERE t.result IS NOT NULL
-		ORDER BY t.ts DESC LIMIT 500
+		ORDER BY t.ts
 	`)
 	if err == nil {
 		defer tradeRows.Close()
@@ -441,6 +442,13 @@ func query(dbPath string) *DashboardData {
 	}
 	data.TradeCount = len(data.RecentTrades)
 
+	displayLimit := 500
+	if len(data.RecentTrades) > displayLimit {
+		data.TradeDisplayed = displayLimit
+	} else {
+		data.TradeDisplayed = len(data.RecentTrades)
+	}
+
 	snapRows, err := db.Query("SELECT date, realized, unrealized, total_trades FROM pnl_snapshots ORDER BY date DESC")
 	if err == nil {
 		defer snapRows.Close()
@@ -467,8 +475,15 @@ func query(dbPath string) *DashboardData {
 
 	data.TotalPnL = data.RealizedPnL + data.UnrealizedPnL
 
+	displayTrades := data.RecentTrades
+	if len(displayTrades) > 500 {
+		displayTrades = displayTrades[len(displayTrades)-500:]
+	}
+	for i, j := 0, len(displayTrades)-1; i < j; i, j = i+1, j-1 {
+		displayTrades[i], displayTrades[j] = displayTrades[j], displayTrades[i]
+	}
 	data.PositionRows = renderPositionRows(data.Positions)
-	data.BalanceRows = renderBalanceRows(data.RecentTrades)
+	data.BalanceRows = renderBalanceRows(displayTrades)
 	data.SnapCells = renderSnapCells(data.SnapshotsReversed)
 
 	computeAndRenderStats(data)
