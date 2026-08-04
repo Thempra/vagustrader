@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -203,7 +204,68 @@ var deriveCredsCmd = &cobra.Command{
 		fmt.Printf("CLOB_API_KEY=%s\n", creds.APIKey)
 		fmt.Printf("CLOB_API_SECRET=%s\n", creds.APISecret)
 		fmt.Printf("CLOB_API_PASSPHRASE=%s\n", creds.APIPassphrase)
+		fmt.Printf("CLOB_ADDRESS=%s\n", creds.Address)
+		if settings.ClobDepositWallet != "" {
+			fmt.Printf("CLOB_DEPOSIT_WALLET=%s\n", settings.ClobDepositWallet)
+		}
 		fmt.Println()
+		return nil
+	},
+}
+
+var depositCmd = &cobra.Command{
+	Use:   "deposit [amount]",
+	Short: "Deposit USDC to Polymarket Exchange",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		settings := cfg.LoadSettings()
+		amount, err := strconv.ParseFloat(args[0], 64)
+		if err != nil {
+			return fmt.Errorf("invalid amount: %w", err)
+		}
+
+		signer, err := clob.NewSigner(settings.PrivateKey, settings.ChainID)
+		if err != nil {
+			return fmt.Errorf("create signer: %w", err)
+		}
+
+		creds := &clob.ClobCreds{
+			APIKey:        settings.ClobAPIKey,
+			APISecret:     settings.ClobAPISecret,
+			APIPassphrase: settings.ClobAPIPassphrase,
+			Address:       settings.ClobAddress,
+		}
+		client, err := clob.NewClobClient(settings.PrivateKey, creds, settings.ClobHost, settings.ChainID)
+		if err != nil {
+			return fmt.Errorf("create clob client: %w", err)
+		}
+		if settings.ClobDepositWallet != "" {
+			client.DepositWallet = settings.ClobDepositWallet
+		}
+		_ = signer
+
+		balNat, balBri, err := client.CheckUSDCBalance(settings.RPCURL)
+		if err != nil {
+			return fmt.Errorf("check balance: %w", err)
+		}
+		fmt.Printf("USDC (native): $%.2f\n", balNat)
+		fmt.Printf("USDC.e (bridged): $%.2f\n", balBri)
+
+		if balNat+balBri < 0.01 {
+			return fmt.Errorf("no USDC or USDC.e available to deposit")
+		}
+
+		fmt.Printf("Depositing to Polymarket...\n")
+		if err := client.DepositToExchange(settings.RPCURL, amount); err != nil {
+			return fmt.Errorf("deposit failed: %w", err)
+		}
+		fmt.Println("Deposit succeeded!")
+
+		finalBal, err := client.GetBalance()
+		if err != nil {
+			return fmt.Errorf("get balance: %w", err)
+		}
+		fmt.Printf("Polymarket balance: $%.2f\n", finalBal)
 		return nil
 	},
 }
@@ -330,6 +392,7 @@ func init() {
 	rootCmd.AddCommand(topTradersCmd)
 	rootCmd.AddCommand(dashboardCmd)
 	rootCmd.AddCommand(deriveCredsCmd)
+	rootCmd.AddCommand(depositCmd)
 	rootCmd.AddCommand(simulateSettleCmd)
 
 	simulateSettleCmd.Flags().String("db", "data/vagustrader.db", "Path to SQLite database")

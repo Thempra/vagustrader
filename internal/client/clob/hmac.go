@@ -11,9 +11,15 @@ import (
 func BuildHMACSignature(secret string, timestamp int64, method, requestPath, body string) string {
 	decoded, err := base64.URLEncoding.DecodeString(secret)
 	if err != nil {
-		decoded, err = base64.RawURLEncoding.DecodeString(strings.TrimRight(secret, "="))
+		decoded, err = base64.StdEncoding.DecodeString(secret)
 		if err != nil {
-			return ""
+			decoded, err = base64.RawURLEncoding.DecodeString(secret)
+			if err != nil {
+				decoded, err = base64.RawStdEncoding.DecodeString(secret)
+				if err != nil {
+					return ""
+				}
+			}
 		}
 	}
 	message := fmt.Sprintf("%d%s%s", timestamp, method, requestPath)

@@ -10,3 +10,12 @@ __pycache__/
 .pytest_cache/
 .coverage
 .serena/
+
+# Build artifacts
+vagustrader
+
+# Secrets
+.env.google
+
+# Playwright MCP logs
+.playwright-mcp/

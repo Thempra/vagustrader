@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -83,9 +84,8 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		balance, err := sctx.Clob.GetBalance()
 		if err != nil {
 			slog.Warn("Could not fetch balance", "error", err)
-		} else if balance < 1.0 {
-			slog.Warn("CopyTrading skipping tick — USDC balance too low", "balance", balance)
-			return nil
+		} else {
+			slog.Info("Balance check", "balance", balance)
 		}
 	}
 
@@ -225,14 +225,33 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			continue
 		}
 
+		tickSize, _ := mktData["tick_size"].(string)
+		if tickSize == "" {
+			tickSize = "0.01"
+		}
+		buyPrice = snapToTick(buyPrice, tickSize)
+
 		if !(cfg.PriceGuard < buyPrice && buyPrice < (1-cfg.PriceGuard)) {
 			skippedPrice++
 			continue
 		}
 
-		size := min(risk.MaxPositionUSDC, pos.Size*buyPrice)
+		size := risk.MaxPositionUSDC
 		if size <= 0 {
 			continue
+		}
+
+		if size*buyPrice < 1.0 {
+			slog.Debug("Skipping — maker amount below $1 minimum", "token", pos.TokenID[:min(8, len(pos.TokenID))], "makerAmt", size*buyPrice)
+			continue
+		}
+
+		negRisk, _ := mktData["neg_risk"].(bool)
+		var exchangeAddr string
+		if negRisk {
+			exchangeAddr = clob.NegRiskExchangeV2
+		} else {
+			exchangeAddr = clob.ExchangeV2
 		}
 
 		orderResult, err := sctx.Clob.PlaceLimitOrder(clob.OrderArgs{
@@ -240,7 +259,8 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			Side:     "BUY",
 			Price:    buyPrice,
 			SizeUSDC: size,
-		}, pos.MarketID)
+			TickSize: tickSize,
+		}, pos.MarketID, exchangeAddr)
 		if err != nil {
 			msg := err.Error()
 			if strings.Contains(msg, "does not exist") || strings.Contains(strings.ToLower(msg), "orderbook") {
@@ -396,6 +416,7 @@ func fetchClobMarket(conditionID string) map[string]interface{} {
 	slug, _ := raw["slug"].(string)
 	active, _ := raw["active"].(bool)
 	closed, _ := raw["closed"].(bool)
+	tickSize, _ := raw["tick_size"].(string)
 
 	var parsedTokens []map[string]interface{}
 	if rawTokens, ok := raw["tokens"].([]interface{}); ok {
@@ -412,12 +433,16 @@ func fetchClobMarket(conditionID string) map[string]interface{} {
 		}
 	}
 
+	negRisk, _ := raw["neg_risk"].(bool)
+
 	return map[string]interface{}{
 		"question":     question,
 		"slug":         slug,
 		"active":       active && !closed,
 		"closed":       closed,
 		"end_date_iso": endDate,
+		"tick_size":    tickSize,
+		"neg_risk":     negRisk,
 		"tokens":       parsedTokens,
 	}
 }
@@ -446,4 +471,20 @@ func parseFloat(s string) (float64, error) {
 	var f float64
 	_, err := fmt.Sscanf(s, "%f", &f)
 	return f, err
+}
+
+func snapToTick(price float64, tickSize string) float64 {
+	ts, err := fmt.Sscanf(tickSize, "%f", new(float64))
+	if err != nil || ts != 1 {
+		ts = 1
+		_ = ts
+	}
+	var tick float64
+	fmt.Sscanf(tickSize, "%f", &tick)
+	if tick <= 0 {
+		tick = 0.01
+	}
+	steps := math.Round(price / tick)
+	snapped := steps * tick
+	return math.Round(snapped*1e8) / 1e8
 }

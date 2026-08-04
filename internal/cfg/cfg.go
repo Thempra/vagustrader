@@ -8,16 +8,19 @@ import (
 )
 
 type Settings struct {
-	PrivateKey         string
-	ClobAPIKey         string
-	ClobAPISecret      string
-	ClobAPIPassphrase  string
-	GammaAPIURL        string
-	DataAPIURL         string
-	ClobHost           string
-	ChainID            int
-	TelegramBotToken   string
-	TelegramChannelID  string
+	PrivateKey          string
+	ClobAPIKey          string
+	ClobAPISecret       string
+	ClobAPIPassphrase   string
+	ClobAddress         string
+	ClobDepositWallet   string
+	RPCURL              string
+	GammaAPIURL         string
+	DataAPIURL          string
+	ClobHost            string
+	ChainID             int
+	TelegramBotToken    string
+	TelegramChannelID   string
 }
 
 func LoadSettings() Settings {
@@ -26,6 +29,9 @@ func LoadSettings() Settings {
 		ClobAPIKey:        os.Getenv("CLOB_API_KEY"),
 		ClobAPISecret:     os.Getenv("CLOB_API_SECRET"),
 		ClobAPIPassphrase: os.Getenv("CLOB_API_PASSPHRASE"),
+		ClobAddress:         os.Getenv("CLOB_ADDRESS"),
+		ClobDepositWallet:   os.Getenv("CLOB_DEPOSIT_WALLET"),
+		RPCURL:            envOr("RPC_URL", "https://polygon-bor.publicnode.com"),
 		GammaAPIURL:       envOr("GAMMA_API_URL", "https://gamma-api.polymarket.com"),
 		DataAPIURL:        envOr("DATA_API_URL", "https://data-api.polymarket.com"),
 		ClobHost:          envOr("CLOB_HOST", "https://clob.polymarket.com"),

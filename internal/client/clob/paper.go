@@ -17,7 +17,7 @@ func (p *PaperClient) GetOrderbook(tokenID string) (*Orderbook, error) {
 	return &Orderbook{TokenID: tokenID}, nil
 }
 
-func (p *PaperClient) PlaceLimitOrder(args OrderArgs, marketID string) (map[string]interface{}, error) {
+func (p *PaperClient) PlaceLimitOrder(args OrderArgs, marketID string, exchangeAddr string) (map[string]interface{}, error) {
 	orderID := fmt.Sprintf("paper-%d", time.Now().UnixMilli())
 	return map[string]interface{}{
 		"orderID": orderID,

@@ -2,21 +2,24 @@ package clob
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type ClobClient struct {
-	host   string
-	signer *Signer
-	creds  *ClobCreds
-	client *http.Client
+	host           string
+	signer         *Signer
+	creds          *ClobCreds
+	client         *http.Client
+	DepositWallet  string
 }
 
 func NewClobClient(privateKey string, creds *ClobCreds, host string, chainID int) (*ClobClient, error) {
@@ -60,20 +63,35 @@ func (c *ClobClient) GetOrderbook(tokenID string) (*Orderbook, error) {
 	return ob, nil
 }
 
-func (c *ClobClient) PlaceLimitOrder(args OrderArgs, marketID string) (map[string]interface{}, error) {
-	signed, err := BuildSignedOrder(c.signer, args, ExchangeV2, "0.01")
+func (c *ClobClient) PlaceLimitOrder(args OrderArgs, marketID string, exchangeAddr string) (map[string]interface{}, error) {
+	tickSize := args.TickSize
+	if tickSize == "" {
+		tickSize = "0.01"
+	}
+	if exchangeAddr == "" {
+		exchangeAddr = ExchangeV2
+	}
+
+	var signed *SignedOrderV2
+	var err error
+	if c.DepositWallet != "" {
+		signed, err = BuildSignedOrderPoly1271(c.signer, args, exchangeAddr, tickSize, c.DepositWallet)
+	} else {
+		signed, err = BuildSignedOrder(c.signer, args, exchangeAddr, tickSize)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("build signed order: %w", err)
 	}
 	payload := map[string]interface{}{
 		"order":     signed,
-		"owner":     c.signer.Address(),
+		"owner":     c.creds.APIKey,
 		"orderType": "GTC",
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal order: %w", err)
 	}
+	slog.Info("Order payload", "body", string(body))
 	var result map[string]interface{}
 	if err := c.post("/order", body, &result); err != nil {
 		return nil, err
@@ -82,12 +100,33 @@ func (c *ClobClient) PlaceLimitOrder(args OrderArgs, marketID string) (map[strin
 }
 
 func (c *ClobClient) GetBalance() (float64, error) {
-	var raw struct {
-		Balance string `json:"balance"`
-	}
-	if err := c.authedGet("/balance-allowance?asset_type=COLLATERAL", &raw); err != nil {
+	ts := time.Now().Unix()
+	sig := BuildHMACSignature(c.creds.APISecret, ts, "GET", "/balance-allowance", "")
+	headers := c.authHeaders(ts, sig)
+	url := c.host + "/balance-allowance?asset_type=COLLATERAL"
+	var rawBytes []byte
+	if err := c.doRequestRaw(http.MethodGet, url, nil, headers, &rawBytes); err != nil {
 		return 0, err
 	}
+	slog.Info("GetBalance raw body", "body", string(rawBytes))
+	var raw struct {
+		Balance   string `json:"balance"`
+		Allowance string `json:"allowance"`
+	}
+	if err := json.Unmarshal(rawBytes, &raw); err != nil {
+		return 0, fmt.Errorf("decode balance: %w", err)
+	}
+	addr := c.signer.Address()
+	if c.creds.Address != "" {
+		addr = c.creds.Address
+	}
+	slog.Info("GetBalance parsed",
+		"balance", raw.Balance,
+		"allowance", raw.Allowance,
+		"pol_address", addr,
+		"signer_address", c.signer.Address(),
+		"api_key_prefix", c.creds.APIKey[:min(8, len(c.creds.APIKey))],
+	)
 	bal, err := strconv.ParseFloat(raw.Balance, 64)
 	if err != nil {
 		return 0, fmt.Errorf("parse balance: %w", err)
@@ -97,7 +136,7 @@ func (c *ClobClient) GetBalance() (float64, error) {
 
 func (c *ClobClient) GetOpenOrders() ([]map[string]interface{}, error) {
 	var result []map[string]interface{}
-	if err := c.authedGet("/data/orders", &result); err != nil {
+	if err := c.authedGet("/data/orders", "", &result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -113,11 +152,7 @@ func (c *ClobClient) CancelOrder(orderID string) (map[string]interface{}, error)
 
 func (c *ClobClient) DeriveAPIKey() (*ClobCreds, error) {
 	ts := time.Now().Unix()
-	nonceBig, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 256))
-	if err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
-	}
-	sig, err := c.signer.SignClobAuth(ts, int(nonceBig.Int64()))
+	sig, err := c.signer.SignClobAuth("", ts, "0")
 	if err != nil {
 		return nil, fmt.Errorf("sign clob auth: %w", err)
 	}
@@ -125,12 +160,12 @@ func (c *ClobClient) DeriveAPIKey() (*ClobCreds, error) {
 		"POLY_ADDRESS":   c.signer.Address(),
 		"POLY_SIGNATURE": sig,
 		"POLY_TIMESTAMP": strconv.FormatInt(ts, 10),
-		"POLY_NONCE":     nonceBig.String(),
+		"POLY_NONCE":     "0",
 	}
 	var resp struct {
 		APIKey        string `json:"apiKey"`
-		APISecret     string `json:"apiSecret"`
-		APIPassphrase string `json:"apiPassphrase"`
+		APISecret     string `json:"secret"`
+		APIPassphrase string `json:"passphrase"`
 	}
 	if err := c.doRequest(http.MethodPost, c.host+"/auth/api-key", nil, headers, &resp); err != nil {
 		return nil, err
@@ -139,6 +174,7 @@ func (c *ClobClient) DeriveAPIKey() (*ClobCreds, error) {
 		APIKey:        resp.APIKey,
 		APISecret:     resp.APISecret,
 		APIPassphrase: resp.APIPassphrase,
+		Address:       c.signer.Address(),
 	}, nil
 }
 
@@ -147,25 +183,41 @@ func (c *ClobClient) CreateOrDeriveAPIKey() (*ClobCreds, error) {
 }
 
 func DeriveAPIKeyFromSigner(signer *Signer, host string) (*ClobCreds, error) {
+	return DeriveAPIKeyForWallet(signer, host, signer.Address())
+}
+
+func DeriveAPIKeyForWallet(signer *Signer, host, walletAddr string) (*ClobCreds, error) {
 	ts := time.Now().Unix()
-	nonceBig, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 256))
-	if err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
+	nonce := time.Now().UnixMilli()
+	nonceStr := strconv.FormatInt(nonce, 10)
+
+	usePoly1271 := walletAddr != "" && !strings.EqualFold(walletAddr, signer.Address())
+
+	var sig string
+	var err error
+	if usePoly1271 {
+		depositWallet := common.HexToAddress(walletAddr)
+		sig, err = signer.SignClobAuthPoly1271(ts, nonceStr, depositWallet)
+		if err != nil {
+			return nil, fmt.Errorf("sign clob auth poly1271: %w", err)
+		}
+	} else {
+		sig, err = signer.SignClobAuth(walletAddr, ts, nonceStr)
+		if err != nil {
+			return nil, fmt.Errorf("sign clob auth: %w", err)
+		}
 	}
-	sig, err := signer.SignClobAuth(ts, int(nonceBig.Int64()))
-	if err != nil {
-		return nil, fmt.Errorf("sign clob auth: %w", err)
-	}
+
 	headers := map[string]string{
-		"POLY_ADDRESS":   signer.Address(),
+		"POLY_ADDRESS":   walletAddr,
 		"POLY_SIGNATURE": sig,
 		"POLY_TIMESTAMP": strconv.FormatInt(ts, 10),
-		"POLY_NONCE":     nonceBig.String(),
+		"POLY_NONCE":     nonceStr,
 	}
 	var resp struct {
 		APIKey        string `json:"apiKey"`
-		APISecret     string `json:"apiSecret"`
-		APIPassphrase string `json:"apiPassphrase"`
+		APISecret     string `json:"secret"`
+		APIPassphrase string `json:"passphrase"`
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest(http.MethodPost, host+"/auth/api-key", nil)
@@ -187,6 +239,7 @@ func DeriveAPIKeyFromSigner(signer *Signer, host string) (*ClobCreds, error) {
 	if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp2.StatusCode, string(data))
 	}
+	slog.Info("Derive response", "body", string(data))
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
@@ -194,6 +247,7 @@ func DeriveAPIKeyFromSigner(signer *Signer, host string) (*ClobCreds, error) {
 		APIKey:        resp.APIKey,
 		APISecret:     resp.APISecret,
 		APIPassphrase: resp.APIPassphrase,
+		Address:       walletAddr,
 	}, nil
 }
 
@@ -209,11 +263,15 @@ func (c *ClobClient) get(path string, result interface{}) error {
 	return c.doRequest(http.MethodGet, c.host+path, nil, nil, result)
 }
 
-func (c *ClobClient) authedGet(path string, result interface{}) error {
+func (c *ClobClient) authedGet(hsignPath, queryString string, result interface{}) error {
 	ts := time.Now().Unix()
-	sig := BuildHMACSignature(c.creds.APISecret, ts, "GET", path, "")
+	sig := BuildHMACSignature(c.creds.APISecret, ts, "GET", hsignPath, "")
 	headers := c.authHeaders(ts, sig)
-	return c.doRequest(http.MethodGet, c.host+path, nil, headers, result)
+	url := c.host + hsignPath
+	if queryString != "" {
+		url += "?" + queryString
+	}
+	return c.doRequest(http.MethodGet, url, nil, headers, result)
 }
 
 func (c *ClobClient) post(path string, body []byte, result interface{}) error {
@@ -235,12 +293,16 @@ func (c *ClobClient) authedDelete(path string, result interface{}) error {
 }
 
 func (c *ClobClient) authHeaders(ts int64, sig string) map[string]string {
+	addr := c.signer.Address()
+	if c.creds.Address != "" {
+		addr = c.creds.Address
+	}
 	return map[string]string{
-		"POLY_ADDRESS":     c.signer.Address(),
-		"POLY_SIGNATURE":   sig,
-		"POLY_TIMESTAMP":   strconv.FormatInt(ts, 10),
-		"POLY_API_KEY":     c.creds.APIKey,
-		"POLY_PASSPHRASE":  c.creds.APIPassphrase,
+		"POLY_ADDRESS":    addr,
+		"POLY_SIGNATURE":  sig,
+		"POLY_TIMESTAMP":  strconv.FormatInt(ts, 10),
+		"POLY_API_KEY":    c.creds.APIKey,
+		"POLY_PASSPHRASE": c.creds.APIPassphrase,
 	}
 }
 
@@ -276,5 +338,36 @@ func (c *ClobClient) doRequest(method, url string, body []byte, headers map[stri
 			return fmt.Errorf("decode response: %w", err)
 		}
 	}
+	return nil
+}
+
+func (c *ClobClient) doRequestRaw(method, url string, body []byte, headers map[string]string, out *[]byte) error {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "vagustrader/1.0")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "*/*")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
+	}
+	*out = data
 	return nil
 }

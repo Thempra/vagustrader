@@ -1,5 +1,5 @@
 risk:
-  max_position_usdc: 50.0
+  max_position_usdc: 5.0
   max_open_positions: 2000
   daily_loss_limit_usdc: 200.0
 

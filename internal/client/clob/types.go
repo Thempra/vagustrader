@@ -16,17 +16,19 @@ type OrderArgs struct {
 	Side     string
 	Price    float64
 	SizeUSDC float64
+	TickSize string
 }
 
 type ClobCreds struct {
 	APIKey        string
 	APISecret     string
 	APIPassphrase string
+	Address       string
 }
 
 type Client interface {
 	GetOrderbook(tokenID string) (*Orderbook, error)
-	PlaceLimitOrder(args OrderArgs, marketID string) (map[string]interface{}, error)
+	PlaceLimitOrder(args OrderArgs, marketID string, exchangeAddr string) (map[string]interface{}, error)
 	GetBalance() (float64, error)
 	GetOpenOrders() ([]map[string]interface{}, error)
 	CancelOrder(orderID string) (map[string]interface{}, error)
