@@ -32,4 +32,5 @@ type Client interface {
 	GetBalance() (float64, error)
 	GetOpenOrders() ([]map[string]interface{}, error)
 	CancelOrder(orderID string) (map[string]interface{}, error)
+	RedeemPosition(rpcURL, conditionID string, negRisk bool, shares float64) (string, error)
 }

@@ -72,6 +72,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		DB:       database,
 		Paper:    e.paper,
 		Notifier: notifier,
+		RPCURL:   e.settings.RPCURL,
 	}
 
 	names := make([]string, len(e.strategies))

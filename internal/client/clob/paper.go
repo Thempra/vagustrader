@@ -36,3 +36,7 @@ func (p *PaperClient) GetOpenOrders() ([]map[string]interface{}, error) {
 func (p *PaperClient) CancelOrder(orderID string) (map[string]interface{}, error) {
 	return map[string]interface{}{"success": true}, nil
 }
+
+func (p *PaperClient) RedeemPosition(rpcURL, conditionID string, negRisk bool, shares float64) (string, error) {
+	return fmt.Sprintf("paper-redeem-%d", time.Now().UnixMilli()), nil
+}

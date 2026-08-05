@@ -13,6 +13,13 @@ import (
 	"github.com/vagustrader/vagustrader/internal/strategy"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 const (
 	interval = 300 * time.Second
 	clobRest = "https://clob.polymarket.com"
@@ -98,6 +105,19 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 			tid = tid[:20]
 		}
 		question = tid + "..."
+	}
+
+	if !sctx.Paper && sctx.RPCURL != "" {
+		negRisk, _ := clobData["neg_risk"].(bool)
+		txHash, err := sctx.Clob.RedeemPosition(sctx.RPCURL, marketID, negRisk, shares)
+		if err != nil {
+			slog.Warn("Redeem failed (tokens may be in deposit wallet, not EOA)", "market", marketID[:min(12, len(marketID))], "error", err)
+		} else {
+			slog.Info("Redeemed position", "market", marketID[:min(12, len(marketID))], "txHash", txHash, "negRisk", negRisk, "shares", shares)
+			if sctx.Notifier != nil {
+				sctx.Notifier.Send(fmt.Sprintf("💰 Redeemed — %s\n→ Shares: %.2f  |  TX: %s", trunc(question, 60), shares, txHash))
+			}
+		}
 	}
 
 	paperTag := ""
