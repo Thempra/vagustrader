@@ -19,6 +19,7 @@ type Context struct {
 	DB       *db.DB
 	Paper    bool
 	Notifier *notify.Notifier
+	RPCURL   string
 }
 
 type Strategy interface {

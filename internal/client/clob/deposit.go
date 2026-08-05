@@ -22,6 +22,9 @@ var (
 	exchangeContract    = common.HexToAddress(ExchangeV2)
 	quickswapV2Router   = common.HexToAddress("0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff")
 	quickswapV3Router   = common.HexToAddress("0xf6f32bC8C7fB840E0681f07C7A9b9D46D9F628f8")
+	pusdToken           = common.HexToAddress(PUSDAddress)
+	ctfContract         = common.HexToAddress(CTFAddress)
+	negRiskAdapter      = common.HexToAddress(NegRiskAdapterAddress)
 
 	approveSelector            = crypto.Keccak256([]byte("approve(address,uint256)"))[:4]
 	balanceOfSelector          = crypto.Keccak256([]byte("balanceOf(address)"))[:4]
@@ -30,6 +33,8 @@ var (
 	swapV2Selector             = crypto.Keccak256([]byte("swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"))[:4]
 	exactInputSingleSelector   = crypto.Keccak256([]byte("exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))"))[:4]
 	pausedSelector             = crypto.Keccak256([]byte("paused(address)"))[:4]
+	redeemPositionsSelector    = crypto.Keccak256([]byte("redeemPositions(address,bytes32,bytes32,uint256[])"))[:4]
+	negRiskRedeemSelector      = crypto.Keccak256([]byte("redeemPositions(bytes32,uint256[])"))[:4]
 )
 
 func (c *ClobClient) CheckUSDCBalance(rpcURL string) (float64, float64, error) {
@@ -388,4 +393,53 @@ func fromWei(wei *big.Int, decimals int) float64 {
 	val.Quo(val, divisor)
 	f, _ := val.Float64()
 	return f
+}
+
+func (c *ClobClient) RedeemPosition(rpcURL, conditionID string, negRisk bool, shares float64) (string, error) {
+	ctx := context.Background()
+	client, err := ethclient.DialContext(ctx, rpcURL)
+	if err != nil {
+		return "", fmt.Errorf("dial rpc: %w", err)
+	}
+	defer client.Close()
+
+	conditionIDBytes := common.HexToHash(conditionID)
+
+	var to common.Address
+	var data []byte
+
+	if negRisk {
+		to = negRiskAdapter
+		amountShares := toWei(shares, 6)
+		data = append([]byte{}, negRiskRedeemSelector...)
+		data = append(data, conditionIDBytes.Bytes()...)
+		offset := common.LeftPadBytes(big.NewInt(64).Bytes(), 32)
+		data = append(data, offset...)
+		data = append(data, common.LeftPadBytes(big.NewInt(2).Bytes(), 32)...)
+		data = append(data, common.LeftPadBytes(amountShares.Bytes(), 32)...)
+		data = append(data, common.LeftPadBytes(big.NewInt(0).Bytes(), 32)...)
+	} else {
+		to = ctfContract
+		parentCollection := [32]byte{}
+		data = append([]byte{}, redeemPositionsSelector...)
+		data = append(data, common.LeftPadBytes(pusdToken.Bytes(), 32)...)
+		data = append(data, parentCollection[:]...)
+		data = append(data, conditionIDBytes.Bytes()...)
+		offset := common.LeftPadBytes(big.NewInt(128).Bytes(), 32)
+		data = append(data, offset...)
+		data = append(data, common.LeftPadBytes(big.NewInt(2).Bytes(), 32)...)
+		data = append(data, common.LeftPadBytes(big.NewInt(1).Bytes(), 32)...)
+		data = append(data, common.LeftPadBytes(big.NewInt(2).Bytes(), 32)...)
+	}
+
+	tx, err := c.sendTx(ctx, client, to, big.NewInt(0), data)
+	if err != nil {
+		return "", fmt.Errorf("redeem tx: %w", err)
+	}
+
+	if err := waitTx(ctx, client, tx); err != nil {
+		return "", err
+	}
+
+	return tx.Hash().Hex(), nil
 }
