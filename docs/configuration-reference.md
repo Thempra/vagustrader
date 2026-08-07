@@ -57,6 +57,22 @@ strategies:
     price_guard: 0.05
     max_copy_per_trader: 5
     max_days_to_resolution: 7
+    min_entry_price: 0.15
+    max_entry_price: 0.80
+    blocked_sports:
+      - nba
+      - nhl
+    size_tiers:
+      - min_price: 0.30
+        max_price: 0.60
+        size_usdc: 10.0
+      - min_price: 0.15
+        max_price: 0.30
+        size_usdc: 5.0
+      - min_price: 0.60
+        max_price: 0.80
+        size_usdc: 3.0
+    min_trader_win_rate: 0.60
 ```
 
 | Field | Default | Description |
@@ -68,6 +84,12 @@ strategies:
 | `price_guard` | `0.05` | Maximum acceptable price deviation (as fraction of 1.0). E.g. `0.05` = 5%. Skips positions where the buy price differs from the trader's entry price by more than this. |
 | `max_copy_per_trader` | `3` | Maximum number of positions to copy from a single trader per tick. |
 | `max_days_to_resolution` | `0` | Maximum days until market resolution. `0` = no limit. Filters out markets resolving too far in the future. |
+| `min_entry_price` | `0.15` | Minimum buy price for a position. Trades below this price are skipped. |
+| `max_entry_price` | `0.80` | Maximum buy price for a position. Trades above this price are skipped. |
+| `allowed_sports` | `[]` | Whitelist of sport categories. If non-empty, only these sports are traded. |
+| `blocked_sports` | `[]` | Blacklist of sport categories. These sports are always skipped. |
+| `size_tiers` | `[]` | Dynamic position sizing by price range. Each tier defines `min_price`, `max_price`, and `size_usdc`. Falls back to `max_position_usdc` if no tier matches. |
+| `min_trader_win_rate` | `0.0` | Minimum fraction of a trader's open positions that must be profitable (cashPnl > 0). `0.0` = no filter. Traders below this threshold are skipped entirely. |
 
 ### `markets` — Market Filters
 
@@ -88,7 +110,7 @@ markets:
 
 ```yaml
 risk:
-  max_position_usdc: 50.0
+  max_position_usdc: 10.0
   max_open_positions: 2000
   daily_loss_limit_usdc: 200.0
 
@@ -101,6 +123,22 @@ strategies:
     price_guard: 0.05
     max_copy_per_trader: 5
     max_days_to_resolution: 7
+    min_entry_price: 0.15
+    max_entry_price: 0.80
+    blocked_sports:
+      - nba
+      - nhl
+    size_tiers:
+      - min_price: 0.30
+        max_price: 0.60
+        size_usdc: 10.0
+      - min_price: 0.15
+        max_price: 0.30
+        size_usdc: 5.0
+      - min_price: 0.60
+        max_price: 0.80
+        size_usdc: 3.0
+    min_trader_win_rate: 0.60
 
 markets:
   min_liquidity_usdc: 1000

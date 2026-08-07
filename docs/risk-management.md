@@ -6,9 +6,12 @@
 
 | Control | Config Key | Default | Enforced |
 |---|---|---|---|
-| Max position size | `max_position_usdc` | $50 | ✅ Yes |
+| Max position size | `max_position_usdc` | $10 | ✅ Yes |
 | Price guard (max deviation) | `price_guard` | 5% | ✅ Yes |
 | Max copies per trader per tick | `max_copy_per_trader` | 3 | ✅ Yes |
+| Min entry price | `min_entry_price` | 0.15 | ✅ Yes |
+| Max entry price | `max_entry_price` | 0.80 | ✅ Yes |
+| Dynamic size tiers | `size_tiers` | $3–10 by range | ✅ Yes |
 
 ### Market-Level Limits
 
@@ -18,6 +21,14 @@
 | Max days to resolution | `max_days_to_resolution` | 7 days | ✅ Yes |
 | Min trader PnL threshold | `min_pnl` | $5,000 | ✅ Yes |
 | Min trader volume | `min_volume_usd` | $1,000 | ✅ Yes |
+| Blocked sports | `blocked_sports` | `["nba", "nhl"]` | ✅ Yes |
+| Allowed sports | `allowed_sports` | `[]` (all) | ✅ Yes |
+
+### Trader-Level Limits
+
+| Control | Config Key | Default | Enforced |
+|---|---|---|---|
+| Min trader win rate | `min_trader_win_rate` | 0.60 | ✅ Yes |
 
 ### System-Level Limits
 

@@ -47,14 +47,26 @@ type RiskConfig struct {
 	DailyLossLimitUSDC  float64 `yaml:"daily_loss_limit_usdc"`
 }
 
+type SizeTier struct {
+	MinPrice float64 `yaml:"min_price"`
+	MaxPrice float64 `yaml:"max_price"`
+	SizeUSDC float64 `yaml:"size_usdc"`
+}
+
 type CopyTradingConfig struct {
-	Enabled             bool    `yaml:"enabled"`
-	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
-	MinPnL              float64 `yaml:"min_pnl"`
-	MinVolumeUSD        float64 `yaml:"min_volume_usd"`
-	PriceGuard          float64 `yaml:"price_guard"`
-	MaxCopyPerTrader    int     `yaml:"max_copy_per_trader"`
-	MaxDaysToResolution float64 `yaml:"max_days_to_resolution"`
+	Enabled             bool        `yaml:"enabled"`
+	PollIntervalSeconds int         `yaml:"poll_interval_seconds"`
+	MinPnL              float64     `yaml:"min_pnl"`
+	MinVolumeUSD        float64     `yaml:"min_volume_usd"`
+	PriceGuard          float64     `yaml:"price_guard"`
+	MaxCopyPerTrader    int         `yaml:"max_copy_per_trader"`
+	MaxDaysToResolution float64     `yaml:"max_days_to_resolution"`
+	MinEntryPrice       float64     `yaml:"min_entry_price"`
+	MaxEntryPrice       float64     `yaml:"max_entry_price"`
+	AllowedSports       []string    `yaml:"allowed_sports"`
+	BlockedSports       []string    `yaml:"blocked_sports"`
+	SizeTiers           []SizeTier  `yaml:"size_tiers"`
+	MinTraderWinRate    float64     `yaml:"min_trader_win_rate"`
 }
 
 type StrategiesConfig struct {
@@ -87,6 +99,9 @@ func LoadAppConfig(path string) AppConfig {
 				PriceGuard:          0.05,
 				MaxCopyPerTrader:    3,
 				MaxDaysToResolution: 0,
+				MinEntryPrice:       0.15,
+				MaxEntryPrice:       0.80,
+				MinTraderWinRate:    0.0,
 			},
 		},
 		Markets: MarketsConfig{

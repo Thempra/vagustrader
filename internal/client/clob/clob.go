@@ -134,6 +134,28 @@ func (c *ClobClient) GetBalance() (float64, error) {
 	return bal / 1e6, nil
 }
 
+func (c *ClobClient) GetOrder(orderID string) (*OrderStatus, error) {
+	var result map[string]interface{}
+	if err := c.authedGet("/order/"+orderID, "", &result); err != nil {
+		return nil, fmt.Errorf("get order %s: %w", orderID, err)
+	}
+	status := &OrderStatus{OrderID: orderID}
+	if s, ok := result["status"].(string); ok {
+		status.Status = s
+	}
+	if sf, ok := result["size_matched"].(string); ok {
+		status.SizeFilled, _ = strconv.ParseFloat(sf, 64)
+	} else if sf, ok := result["size_matched"].(float64); ok {
+		status.SizeFilled = sf
+	}
+	if p, ok := result["price"].(string); ok {
+		status.Price, _ = strconv.ParseFloat(p, 64)
+	} else if p, ok := result["price"].(float64); ok {
+		status.Price = p
+	}
+	return status, nil
+}
+
 func (c *ClobClient) GetOpenOrders() ([]map[string]interface{}, error) {
 	var result []map[string]interface{}
 	if err := c.authedGet("/data/orders", "", &result); err != nil {

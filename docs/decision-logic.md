@@ -40,7 +40,32 @@ Each open position from a qualifying trader is evaluated independently:
 | Already held | Skip if token already in DB | `positions` table lookup |
 | CLOB market active | Fetch `/markets/{condition_id}` | Must resolve to active data |
 | Price within guard | `abs(price - trader_price) / price < guard` | `price_guard` (default 0.05 = 5%) |
+| Price in allowed range | `min_entry_price ≤ price ≤ max_entry_price` | `min_entry_price`, `max_entry_price` |
+| Sport not blocked | Slug prefix detected and checked | `allowed_sports`, `blocked_sports` |
 | Days to resolution | `days < max_days_to_resolution` | `max_days_to_resolution` (default 7) |
+
+### Price Range Filter
+
+Positions outside the configured price range are skipped:
+
+```
+if price < min_entry_price OR price > max_entry_price → SKIP
+```
+
+Default: `0.15` to `0.80`. Historical analysis shows that prices below 0.15 have <10% win rate and prices above 0.80 have negative expected ROI despite high win rate.
+
+### Sport Category Filter
+
+Sport is detected from the market slug prefix (e.g. `nba-` → basketball, `atp-` → tennis):
+
+```
+slug = "nba-lakers-vs-celtics"
+sport = detectSport(slug) → "nba"
+if sport in blocked_sports → SKIP
+if allowed_sports non-empty AND sport not in allowed_sports → SKIP
+```
+
+Default: blocks NBA and NHL (historically break-even).
 
 ### Price Guard Detail
 
@@ -74,12 +99,21 @@ Tokens that fail any eligibility check enter a 1-hour cache (`deadTokens map[str
 ## Step 4 — Position sizing
 
 ```go
-size_usdc = min(max_position_usdc, trader_value_usdc, available_balance)
+size_usdc = getPositionSize(buyPrice, cfg.SizeTiers, risk.MaxPositionUSDC)
 ```
 
-Where `trader_value_usdc` is the trader's position size in USDC (adjusted for the min of the individual's position and a per-trader cap).
+If `size_tiers` is configured, the bot selects the first matching tier where `min_price ≤ price < max_price` and uses that tier's `size_usdc`, capped by `max_position_usdc`. If no tier matches, `max_position_usdc` is used as default.
 
-**Config:** `risk.max_position_usdc` (default: $50)
+**Default tiers:**
+
+| Price Range | Size |
+|---|---|
+| 0.30 – 0.60 (sweet spot) | $10.00 |
+| 0.15 – 0.30 | $5.00 |
+| 0.60 – 0.80 | $3.00 |
+| No match | `max_position_usdc` ($10.00) |
+
+**Config:** `strategies.copy_trading.size_tiers`, `risk.max_position_usdc`
 
 ---
 
@@ -92,6 +126,9 @@ Where `trader_value_usdc` is the trader's position size in USDC (adjusted for th
 | USDC balance ≥ $1.00 | Global — skip if insufficient | ✅ |
 | Token in dead cache | Per token — 1h TTL | ✅ |
 | Already held | Per token — no duplicates | ✅ |
+| Price range filter | Per token — min/max entry price | ✅ |
+| Sport filter | Per token — blocked/allowed sports | ✅ |
+| Trader edge filter | Per trader — min profitable position rate | ✅ |
 | Daily loss limit | Global | ❌ (config exists, not implemented) |
 
 ---
@@ -106,7 +143,9 @@ Each tick runs in two distinct phases:
 1. Fetch top traders from Data API leaderboard
 2. For each qualifying trader:
    a. Fetch their current positions from Data API
-   b. For each position token:
+   b. [Trader edge filter] Calculate profitable positions / total positions
+      - If win rate < min_trader_win_rate → SKIP this trader entirely
+   c. For each position token:
       - Append (trader_address, outcome, size, entry_price) to token_sources[token_id]
 3. Result: map[string][]sourceTrader  — every source trader for every candidate token
 ```
@@ -133,15 +172,18 @@ For each (token, sources) in token_sources map:
      a. Try CLOB market data "price" field first
      b. Fall back to orderbook best ask
   7. Apply price guard: compare buy price to source trader's price
-  8. Apply max_days_to_resolution filter
-  9. Size position: min(max_position, trader_value)
-  10. Place BUY limit order (paper or live)
-  11. On success:
+  8. Apply price range filter: skip if price < min_entry_price or > max_entry_price
+  9. Apply sport filter: detect sport from slug, skip if blocked
+  10. Apply max_days_to_resolution filter
+  11. Size position: use size_tiers or fall back to max_position_usdc
+  12. Place BUY limit order (paper or live)
+  13. Verify order fill (poll GetOrder with 2s delay)
+  14. On success:
       - Record trade in DB with outcome + source_json
       - Upsert position (weighted average blend)
       - Insert market metadata (question, slug)
       - Log "Copied" with trader, outcome, price, size, source count
-  12. On failure: add token to dead cache
+  15. On failure: add token to dead cache
 ```
 
 **Source tracking:** Each trade stores a JSON array of all source traders that held the same token:
@@ -266,18 +308,22 @@ Every 300s (independently):
 Polymarket Leaderboard
   └─ Filter: PnL ≥ min_pnl, Volume ≥ min_volume
        └─ For each qualifying trader
-            └─ Fetch their open positions
-                 └─ Deduplicate by token → build token→sources map
-                      └─ For each unique token:
-                           ├─ Dead cache? → SKIP
-                           ├─ Already held? → SKIP
-                           ├─ CLOB active? → SKIP if not
-                           ├─ Price guard? → SKIP if deviated
-                           ├─ Resolution too far? → SKIP
-                           └─ PASS → BUY limit order
-                                ├─ Record trade + outcome + sources
-                                ├─ Upsert position (weighted avg)
-                                └─ Save market metadata
+            └─ Trader edge filter: profitable positions / total ≥ min_trader_win_rate
+                 └─ Fetch their open positions
+                      └─ Deduplicate by token → build token→sources map
+                           └─ For each unique token:
+                                ├─ Dead cache? → SKIP
+                                ├─ Already held? → SKIP
+                                ├─ CLOB active? → SKIP if not
+                                ├─ Price guard? → SKIP if deviated
+                                ├─ Price range? → SKIP if < min or > max
+                                ├─ Sport blocked? → SKIP if in blacklist
+                                ├─ Resolution too far? → SKIP
+                                └─ PASS → BUY limit order
+                                     ├─ Verify fill (GetOrder poll)
+                                     ├─ Record trade + outcome + sources
+                                     ├─ Upsert position (weighted avg)
+                                     └─ Save market metadata
           
 Hold position until market resolution
   └─ Settlement check (every 300s)

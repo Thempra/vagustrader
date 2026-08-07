@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vagustrader/vagustrader/internal/cfg"
 	"github.com/vagustrader/vagustrader/internal/client/clob"
 	"github.com/vagustrader/vagustrader/internal/client/dataapi"
 	"github.com/vagustrader/vagustrader/internal/db"
@@ -116,6 +117,19 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		if err != nil {
 			continue
 		}
+		if cfg.MinTraderWinRate > 0 && len(traderPositions) > 0 {
+			profitable := 0
+			for _, tp := range traderPositions {
+				if tp.CashPnl > 0 {
+					profitable++
+				}
+			}
+			winRate := float64(profitable) / float64(len(traderPositions))
+			if winRate < cfg.MinTraderWinRate {
+				slog.Debug("Skipping trader — low win rate", "trader", trader.Address[:min(8, len(trader.Address))], "winRate", fmt.Sprintf("%.0f%%", winRate*100))
+				continue
+			}
+		}
 		for _, pos := range traderPositions {
 			if pos.TokenID == "" {
 				continue
@@ -137,7 +151,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 	marketCache := make(map[string]map[string]interface{})
 
 	var totalPositionsSeen, skippedHeld, skippedDead int
-	var skippedPrice, skippedTooFar, skippedNoPrice, skippedNoMarket int
+	var skippedPrice, skippedTooFar, skippedNoPrice, skippedNoMarket, skippedSport int
 	var openedThisTick int
 	traderCopied := make(map[string]int)
 
@@ -236,7 +250,23 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			continue
 		}
 
-		size := risk.MaxPositionUSDC
+		if cfg.MinEntryPrice > 0 && buyPrice < cfg.MinEntryPrice {
+			skippedPrice++
+			continue
+		}
+		if cfg.MaxEntryPrice > 0 && buyPrice > cfg.MaxEntryPrice {
+			skippedPrice++
+			continue
+		}
+
+		slug, _ := mktData["slug"].(string)
+		sport := detectSport(slug, pos.Slug)
+		if isBlocked(sport, cfg.AllowedSports, cfg.BlockedSports) {
+			skippedSport++
+			continue
+		}
+
+		size := getPositionSize(buyPrice, cfg.SizeTiers, risk.MaxPositionUSDC)
 		if size <= 0 {
 			continue
 		}
@@ -284,6 +314,31 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			}
 		}
 
+		filledSize, fillStatus := size, "filled"
+		if orderID != "" {
+			time.Sleep(2 * time.Second)
+			orderInfo, orderErr := sctx.Clob.GetOrder(orderID)
+			if orderErr != nil {
+				slog.Warn("Could not verify order fill", "orderID", orderID, "error", orderErr)
+			} else if orderInfo != nil {
+				fillStatus = orderInfo.Status
+				if orderInfo.SizeFilled > 0 && orderInfo.Price > 0 {
+					filledSize = orderInfo.SizeFilled * orderInfo.Price
+				}
+				slog.Info("Order status", "orderID", orderID, "status", fillStatus, "filledUSDC", filledSize)
+			}
+		}
+
+		if fillStatus != "FILLED" && fillStatus != "filled" && fillStatus != "MATCHED" && fillStatus != "LIVE" && !sctx.Paper {
+			slog.Warn("Order not filled, skipping trade record", "orderID", orderID, "status", fillStatus)
+			continue
+		}
+
+		if filledSize < 1.0 {
+			slog.Warn("Fill too small, skipping trade record", "orderID", orderID, "filledSize", filledSize)
+			continue
+		}
+
 		sourceJSON := "[]"
 		if sources, ok := tokenSources[pos.TokenID]; ok && len(sources) > 0 {
 			if raw, err := json.Marshal(sources); err == nil {
@@ -298,10 +353,11 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			Side:       "BUY",
 			Outcome:    buyOutcome,
 			Price:      buyPrice,
-			SizeUSDC:   size,
+			SizeUSDC:   filledSize,
 			OrderID:    orderID,
 			Paper:      sctx.Paper,
 			SourceJSON: sourceJSON,
+			Status:     "filled",
 		}); dbErr != nil {
 			slog.Error("record trade", "error", dbErr)
 		}
@@ -310,7 +366,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			TokenID:   pos.TokenID,
 			MarketID:  pos.MarketID,
 			Outcome:   buyOutcome,
-			Size:      size / buyPrice,
+			Size:      filledSize / buyPrice,
 			AvgPrice:  buyPrice,
 			UpdatedTs: time.Now().Unix(),
 		}); dbErr != nil {
@@ -321,7 +377,6 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		if q, _ := mktData["question"].(string); q != "" {
 			question = q
 		}
-		slug, _ := mktData["slug"].(string)
 
 		if dbErr := sctx.DB.UpsertMarketMeta(&db.MarketMeta{
 			ConditionID: pos.MarketID,
@@ -378,6 +433,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		"no_price", skippedNoPrice,
 		"price", skippedPrice,
 		"too_far", skippedTooFar,
+		"sport", skippedSport,
 	)
 	return nil
 }
@@ -487,4 +543,73 @@ func snapToTick(price float64, tickSize string) float64 {
 	steps := math.Round(price / tick)
 	snapped := steps * tick
 	return math.Round(snapped*1e8) / 1e8
+}
+
+var sportPrefixes = map[string]string{
+	"mlb":        "mlb",
+	"nba":        "nba",
+	"nhl":        "nhl",
+	"nfl":        "nfl",
+	"atp":        "tennis",
+	"wta":        "tennis",
+	"wnba":       "wnba",
+	"cs2":        "esports",
+	"dota2":      "esports",
+	"epl":        "soccer",
+	"laliga":     "soccer",
+	"seriea":     "soccer",
+	"bundesliga": "soccer",
+	"ufc":        "mma",
+	"mma":        "mma",
+	"mls":        "soccer",
+	"ncaab":      "ncaab",
+	"ncaaf":      "ncaaf",
+	"pga":        "golf",
+	"tennis":     "tennis",
+}
+
+func detectSport(marketSlug string, positionSlug string) string {
+	for _, s := range []string{marketSlug, positionSlug} {
+		if s == "" {
+			continue
+		}
+		lower := strings.ToLower(s)
+		for prefix, sport := range sportPrefixes {
+			if strings.HasPrefix(lower, prefix+"-") || strings.Contains(lower, "-"+prefix+"-") {
+				return sport
+			}
+		}
+	}
+	return ""
+}
+
+func isBlocked(sport string, allowed []string, blocked []string) bool {
+	if sport == "" {
+		return false
+	}
+	if len(allowed) > 0 {
+		found := false
+		for _, a := range allowed {
+			if strings.EqualFold(a, sport) {
+				found = true
+				break
+			}
+		}
+		return !found
+	}
+	for _, b := range blocked {
+		if strings.EqualFold(b, sport) {
+			return true
+		}
+	}
+	return false
+}
+
+func getPositionSize(price float64, tiers []cfg.SizeTier, maxSize float64) float64 {
+	for _, t := range tiers {
+		if price >= t.MinPrice && price < t.MaxPrice && t.SizeUSDC > 0 {
+			return math.Min(t.SizeUSDC, maxSize)
+		}
+	}
+	return maxSize
 }

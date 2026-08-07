@@ -26,9 +26,17 @@ type ClobCreds struct {
 	Address       string
 }
 
+type OrderStatus struct {
+	OrderID      string
+	Status       string
+	SizeFilled   float64
+	Price        float64
+}
+
 type Client interface {
 	GetOrderbook(tokenID string) (*Orderbook, error)
 	PlaceLimitOrder(args OrderArgs, marketID string, exchangeAddr string) (map[string]interface{}, error)
+	GetOrder(orderID string) (*OrderStatus, error)
 	GetBalance() (float64, error)
 	GetOpenOrders() ([]map[string]interface{}, error)
 	CancelOrder(orderID string) (map[string]interface{}, error)

@@ -33,6 +33,7 @@ type Trade struct {
 	Paper      bool
 	Result     sql.NullFloat64
 	SourceJSON string
+	Status     string
 }
 
 type Position struct {
@@ -81,6 +82,9 @@ func Init(path string) (*DB, error) {
 	ldb.Exec("ALTER TABLE trades ADD COLUMN result REAL")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN source_json TEXT")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN outcome TEXT")
+	ldb.Exec("ALTER TABLE trades ADD COLUMN status TEXT")
+	ldb.Exec("UPDATE trades SET status = 'filled' WHERE result IS NOT NULL AND status IS NULL")
+	ldb.Exec("UPDATE trades SET status = 'placed' WHERE result IS NULL AND status IS NULL")
 
 	return &DB{ldb}, nil
 }
@@ -91,8 +95,8 @@ func (db *DB) RecordTrade(t *Trade) (int64, error) {
 		paper = 1
 	}
 	res, err := db.Exec(
-		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON,
+		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON, t.Status,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert trade: %w", err)
