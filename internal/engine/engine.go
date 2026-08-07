@@ -39,16 +39,15 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
-	creds, err := e.resolveCreds()
-	if err != nil {
-		return err
-	}
-
 	var clobClient clob.Client
 	if e.paper {
 		clobClient = clob.NewPaperClient("data/vagustrader.db")
 		slog.Info("Paper trading mode")
 	} else {
+		creds, err := e.resolveCreds()
+		if err != nil {
+			return err
+		}
 		clobClient, err = clob.NewClobClient(e.settings.PrivateKey, creds, e.settings.ClobHost, e.settings.ChainID)
 		if err != nil {
 			return err

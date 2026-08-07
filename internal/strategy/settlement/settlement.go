@@ -54,7 +54,7 @@ func (s *SettlementStrategy) tick(sctx *strategy.Context) error {
 			if len(tid) > 12 {
 				tid = tid[:12]
 			}
-			slog.Debug("Settlement error", "token", tid, "error", err)
+			slog.Error("Settlement error", "token", tid, "error", err)
 		}
 	}
 	return nil
@@ -109,15 +109,7 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 
 	if !sctx.Paper && sctx.RPCURL != "" {
 		negRisk, _ := clobData["neg_risk"].(bool)
-		txHash, err := sctx.Clob.RedeemPosition(sctx.RPCURL, marketID, negRisk, shares)
-		if err != nil {
-			slog.Warn("Redeem failed (tokens may be in deposit wallet, not EOA)", "market", marketID[:min(12, len(marketID))], "error", err)
-		} else {
-			slog.Info("Redeemed position", "market", marketID[:min(12, len(marketID))], "txHash", txHash, "negRisk", negRisk, "shares", shares)
-			if sctx.Notifier != nil {
-				sctx.Notifier.Send(fmt.Sprintf("💰 Redeemed — %s\n→ Shares: %.2f  |  TX: %s", trunc(question, 60), shares, txHash))
-			}
-		}
+		slog.Info("Market resolved — funds stay on Polymarket as Available to trade", "market", marketID[:min(12, len(marketID))], "negRisk", negRisk, "shares", shares)
 	}
 
 	paperTag := ""

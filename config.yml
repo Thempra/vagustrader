@@ -1,5 +1,5 @@
 risk:
-  max_position_usdc: 5.0
+  max_position_usdc: 10.0
   max_open_positions: 2000
   daily_loss_limit_usdc: 200.0
 
@@ -12,6 +12,22 @@ strategies:
     price_guard: 0.05
     max_copy_per_trader: 5
     max_days_to_resolution: 7
+    min_entry_price: 0.15
+    max_entry_price: 0.80
+    blocked_sports:
+      - nba
+      - nhl
+    size_tiers:
+      - min_price: 0.30
+        max_price: 0.60
+        size_usdc: 10.0
+      - min_price: 0.15
+        max_price: 0.30
+        size_usdc: 5.0
+      - min_price: 0.60
+        max_price: 0.80
+        size_usdc: 3.0
+    min_trader_win_rate: 0.60
 
 markets:
   min_liquidity_usdc: 1000

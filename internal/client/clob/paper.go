@@ -25,6 +25,15 @@ func (p *PaperClient) PlaceLimitOrder(args OrderArgs, marketID string, exchangeA
 	}, nil
 }
 
+func (p *PaperClient) GetOrder(orderID string) (*OrderStatus, error) {
+	return &OrderStatus{
+		OrderID:    orderID,
+		Status:     "FILLED",
+		SizeFilled: 1.0,
+		Price:      0,
+	}, nil
+}
+
 func (p *PaperClient) GetBalance() (float64, error) {
 	return 10000.0, nil
 }

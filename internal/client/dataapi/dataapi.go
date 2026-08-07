@@ -23,6 +23,10 @@ type Position struct {
 	Size         float64
 	AvgPrice     float64
 	CurrentValue float64
+	Slug         string
+	Icon         string
+	CashPnl      float64
+	PercentPnl   float64
 }
 
 type Client struct {
@@ -170,6 +174,10 @@ func parsePosition(d map[string]interface{}) Position {
 		Size:         floatVal(d, "size"),
 		AvgPrice:     floatVal(d, "avgPrice"),
 		CurrentValue: floatVal(d, "currentValue"),
+		Slug:         stringVal(d, "slug"),
+		Icon:         stringVal(d, "icon"),
+		CashPnl:      floatVal(d, "cashPnl"),
+		PercentPnl:   floatVal(d, "percentPnl"),
 	}
 }
 
