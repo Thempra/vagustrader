@@ -2,15 +2,12 @@ package settlement
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
 
+	"github.com/vagustrader/vagustrader/internal/broker"
 	"github.com/vagustrader/vagustrader/internal/db"
-	"github.com/vagustrader/vagustrader/internal/notify"
-	"github.com/vagustrader/vagustrader/internal/strategy"
 )
 
 func min(a, b int) int {
@@ -20,19 +17,26 @@ func min(a, b int) int {
 	return b
 }
 
-const (
-	interval = 300 * time.Second
-	clobRest = "https://clob.polymarket.com"
-)
+type SettlementStrategy struct {
+	broker *broker.Broker
+}
 
-type SettlementStrategy struct{}
+func New(b *broker.Broker) *SettlementStrategy {
+	return &SettlementStrategy{broker: b}
+}
 
 func (s *SettlementStrategy) Name() string { return "settlement" }
 
-func (s *SettlementStrategy) Run(ctx context.Context, sctx *strategy.Context) error {
-	slog.Info("Settlement checker started")
+func (s *SettlementStrategy) Run(ctx context.Context, b *broker.Broker) error {
+	intervalSec := b.GetConfig().Strategies.Settlement.IntervalSeconds
+	if intervalSec <= 0 {
+		intervalSec = 300
+	}
+	interval := time.Duration(intervalSec) * time.Second
+
+	slog.Info("Settlement checker started", "interval", intervalSec)
 	for {
-		if err := s.tick(sctx); err != nil {
+		if err := s.tick(b); err != nil {
 			slog.Error("Settlement tick error", "error", err)
 		}
 		select {
@@ -43,13 +47,13 @@ func (s *SettlementStrategy) Run(ctx context.Context, sctx *strategy.Context) er
 	}
 }
 
-func (s *SettlementStrategy) tick(sctx *strategy.Context) error {
-	positions, err := sctx.DB.GetPositions()
+func (s *SettlementStrategy) tick(b *broker.Broker) error {
+	positions, err := b.GetPositions()
 	if err != nil {
 		return fmt.Errorf("get positions: %w", err)
 	}
 	for _, pos := range positions {
-		if err := s.checkPosition(sctx, &pos); err != nil {
+		if err := s.checkPosition(b, &pos); err != nil {
 			tid := pos.TokenID
 			if len(tid) > 12 {
 				tid = tid[:12]
@@ -60,14 +64,14 @@ func (s *SettlementStrategy) tick(sctx *strategy.Context) error {
 	return nil
 }
 
-func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Position) error {
+func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) error {
 	tokenID := pos.TokenID
 	marketID := pos.MarketID
 	avgPrice := pos.AvgPrice
 	shares := pos.Size
 	outcome := pos.Outcome
 
-	clobData := fetchClobMarketData(marketID)
+	clobData := b.GetMarketData(marketID)
 	if clobData == nil {
 		return nil
 	}
@@ -82,7 +86,7 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 
 	pnl := (finalPrice - avgPrice) * shares
 
-	question, slug, err := sctx.DB.GetMarketMeta(marketID)
+	question, slug, err := b.GetMarketMeta(marketID)
 	if err != nil {
 		return fmt.Errorf("get market meta: %w", err)
 	}
@@ -90,7 +94,7 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 		if q, ok := clobData["question"].(string); ok && q != "" {
 			question = q
 			slug, _ = clobData["slug"].(string)
-			if err := sctx.DB.UpsertMarketMeta(&db.MarketMeta{
+			if err := b.UpsertMarketMeta(&db.MarketMeta{
 				ConditionID: marketID,
 				Question:    question,
 				Slug:        slug,
@@ -107,13 +111,13 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 		question = tid + "..."
 	}
 
-	if !sctx.Paper && sctx.RPCURL != "" {
+	if !b.IsPaper() {
 		negRisk, _ := clobData["neg_risk"].(bool)
 		slog.Info("Market resolved — funds stay on Polymarket as Available to trade", "market", marketID[:min(12, len(marketID))], "negRisk", negRisk, "shares", shares)
 	}
 
 	paperTag := ""
-	if sctx.Paper {
+	if b.IsPaper() {
 		paperTag = " [PAPER]"
 	}
 	slog.Info("Settled",
@@ -125,58 +129,29 @@ func (s *SettlementStrategy) checkPosition(sctx *strategy.Context, pos *db.Posit
 		"paper", paperTag,
 	)
 
-	if err := sctx.DB.SettleTrades(tokenID, finalPrice); err != nil {
+	if err := b.SettleTrades(tokenID, finalPrice); err != nil {
 		return fmt.Errorf("settle trades: %w", err)
 	}
-	if err := sctx.DB.DeletePosition(tokenID); err != nil {
+	if err := b.DeletePosition(tokenID); err != nil {
 		return fmt.Errorf("delete position: %w", err)
 	}
-	if err := updateSnapshot(sctx.DB, pnl); err != nil {
+	if err := updateSnapshot(b, pnl); err != nil {
 		return fmt.Errorf("update snapshot: %w", err)
 	}
 
-	if sctx.Notifier != nil {
-		sendNotification(sctx.Notifier, question, slug, outcome, finalPrice, avgPrice, shares, pnl, sctx.Paper)
+	if b.GetNotifier() != nil {
+		sendNotification(b.GetNotifier(), question, slug, outcome, finalPrice, avgPrice, shares, pnl, b.IsPaper())
 	}
 
 	return nil
 }
 
-func fetchClobMarketData(conditionID string) map[string]interface{} {
-	url := clobRest + "/markets/" + conditionID
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		slog.Debug("CLOB REST request error", "condition", trunc(conditionID, 12), "error", err)
-		return nil
-	}
-	req.Header.Set("User-Agent", "python-httpx/0.27.0")
-
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("CLOB REST check failed", "condition", trunc(conditionID, 12), "error", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		slog.Debug("CLOB REST decode failed", "condition", trunc(conditionID, 12), "error", err)
-		return nil
-	}
-	return result
-}
-
 func tokenPrice(marketData map[string]interface{}, tokenID string) float64 {
-	tokens, ok := marketData["tokens"].([]interface{})
+	tokens, ok := marketData["tokens"].([]map[string]interface{})
 	if !ok {
 		return -1
 	}
-	for _, t := range tokens {
-		m, ok := t.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	for _, m := range tokens {
 		if tid, _ := m["token_id"].(string); tid == tokenID {
 			p, _ := m["price"].(float64)
 			return p
@@ -185,17 +160,18 @@ func tokenPrice(marketData map[string]interface{}, tokenID string) float64 {
 	return -1
 }
 
-func updateSnapshot(database *db.DB, pnl float64) error {
+func updateSnapshot(b *broker.Broker, pnl float64) error {
 	today := time.Now().UTC().Format("2006-01-02")
 
-	snapshots, err := database.GetPNLSnapshots(1000)
+	database := b.GetDatabase()
+	snapList, err := database.GetPNLSnapshots(1000)
 	if err != nil {
 		return fmt.Errorf("get pnl snapshots: %w", err)
 	}
 
 	var existingRealized float64
 	var existingTrades int
-	for _, s := range snapshots {
+	for _, s := range snapList {
 		if s.Date == today {
 			existingRealized = s.Realized
 			existingTrades = s.TotalTrades
@@ -211,7 +187,7 @@ func updateSnapshot(database *db.DB, pnl float64) error {
 	})
 }
 
-func sendNotification(n *notify.Notifier, question, slug, outcome string, finalPrice, avgPrice, shares, pnl float64, paper bool) {
+func sendNotification(n interface{ Send(string) }, question, slug, outcome string, finalPrice, avgPrice, shares, pnl float64, paper bool) {
 	result := "✅ WIN"
 	if pnl < 0 {
 		result = "❌ LOSS"
@@ -230,13 +206,13 @@ func sendNotification(n *notify.Notifier, question, slug, outcome string, finalP
 	var urlLine string
 	if slug != "" {
 		urlLine = fmt.Sprintf(
-			`\n🔗 <a href="https://polymarket.com/market/%s">%s</a>`,
-			slug, trunc(question, 60),
+			"\n🔗 https://polymarket.com/market/%s",
+			slug,
 		)
 	}
 
 	msg := fmt.Sprintf(
-		"%s — Position settled %s\n📊 <b>%s</b>\n→ Held: <b>%s</b> → %s\n→ Entry: %.3f  |  Shares: %.2f  |  P&amp;L: <b>$%.2f</b>%s",
+		"%s — Position settled %s\n📊 %s\n-> Held: %s → %s\n-> Entry: %.3f  |  Shares: %.2f  |  P&L: $%.2f%s",
 		mode, result, trunc(question, 80), outcome, wonLost, avgPrice, shares, pnl, urlLine,
 	)
 	n.Send(msg)
@@ -249,5 +225,4 @@ func trunc(s string, n int) string {
 	return s[:n]
 }
 
-// Ensure SettlementStrategy implements strategy.Strategy at compile time.
-var _ strategy.Strategy = (*SettlementStrategy)(nil)
+var _ interface{ Name() string } = (*SettlementStrategy)(nil)

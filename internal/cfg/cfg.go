@@ -71,6 +71,12 @@ type CopyTradingConfig struct {
 
 type StrategiesConfig struct {
 	CopyTrading CopyTradingConfig `yaml:"copy_trading"`
+	Settlement  SettlementConfig  `yaml:"settlement"`
+}
+
+type SettlementConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	IntervalSeconds int  `yaml:"interval_seconds"`
 }
 
 type MarketsConfig struct {
@@ -102,6 +108,10 @@ func LoadAppConfig(path string) AppConfig {
 				MinEntryPrice:       0.15,
 				MaxEntryPrice:       0.80,
 				MinTraderWinRate:    0.0,
+			},
+			Settlement: SettlementConfig{
+				Enabled:          true,
+				IntervalSeconds: 300,
 			},
 		},
 		Markets: MarketsConfig{

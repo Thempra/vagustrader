@@ -18,8 +18,6 @@ import (
 	"github.com/vagustrader/vagustrader/internal/engine"
 	"github.com/vagustrader/vagustrader/internal/logging"
 	"github.com/vagustrader/vagustrader/internal/strategy"
-	"github.com/vagustrader/vagustrader/internal/strategy/copytrading"
-	"github.com/vagustrader/vagustrader/internal/strategy/settlement"
 )
 
 var rootCmd = &cobra.Command{
@@ -48,10 +46,21 @@ var runCmd = &cobra.Command{
 		fmt.Printf("VagusTrader starting — mode: %s\n\n", mode)
 
 		var strategies []strategy.Strategy
+
 		if appConfig.Strategies.CopyTrading.Enabled {
-			strategies = append(strategies, copytrading.New())
+			s, err := strategy.Create("copy_trading")
+			if err != nil {
+				return fmt.Errorf("create copy_trading strategy: %w", err)
+			}
+			strategies = append(strategies, s)
 		}
-		strategies = append(strategies, &settlement.SettlementStrategy{})
+		if appConfig.Strategies.Settlement.Enabled {
+			s, err := strategy.Create("settlement")
+			if err != nil {
+				return fmt.Errorf("create settlement strategy: %w", err)
+			}
+			strategies = append(strategies, s)
+		}
 
 		return engine.RunWithGracefulShutdown(settings, appConfig, paper, strategies...)
 	},
