@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/vagustrader/vagustrader/internal/broker"
 	"github.com/vagustrader/vagustrader/internal/cfg"
 	"github.com/vagustrader/vagustrader/internal/client/clob"
 	"github.com/vagustrader/vagustrader/internal/client/dataapi"
@@ -63,15 +65,18 @@ func (e *Engine) Start(ctx context.Context) error {
 	dataAPI := dataapi.NewClient(e.settings.DataAPIURL)
 	notifier := notify.New(e.settings.TelegramBotToken, e.settings.TelegramChannelID)
 
-	sctx := &strategy.Context{
-		Clob:     clobClient,
-		Gamma:    gammaClient,
-		DataAPI:  dataAPI,
-		Config:   &e.config,
-		DB:       database,
-		Paper:    e.paper,
-		Notifier: notifier,
-		RPCURL:   e.settings.RPCURL,
+	brk := broker.New(clobClient, dataAPI, gammaClient, database, &e.config, e.paper, notifier)
+
+	if !e.paper {
+		tradingCount := 0
+		for _, s := range e.strategies {
+			if s.Name() != "settlement" {
+				tradingCount++
+			}
+		}
+		if tradingCount > 1 {
+			return fmt.Errorf("live mode: only 1 trading strategy allowed, got %d — use paper mode for multi-strategy", tradingCount)
+		}
 	}
 
 	names := make([]string, len(e.strategies))
@@ -84,7 +89,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	for _, s := range e.strategies {
 		s := s
 		g.Go(func() error {
-			return s.Run(gctx, sctx)
+			return s.Run(gctx, brk)
 		})
 	}
 

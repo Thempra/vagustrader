@@ -4,33 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
-	"net/http"
 	"strings"
 	"time"
 
+	"github.com/vagustrader/vagustrader/internal/broker"
 	"github.com/vagustrader/vagustrader/internal/cfg"
-	"github.com/vagustrader/vagustrader/internal/client/clob"
 	"github.com/vagustrader/vagustrader/internal/client/dataapi"
-	"github.com/vagustrader/vagustrader/internal/db"
-	"github.com/vagustrader/vagustrader/internal/strategy"
 )
-
-var _ dataapi.Position // ensure dataapi import is used
-var _ dataapi.LeaderboardEntry
 
 const deadTokenTTL = 3600
 
-const clobREST = "https://clob.polymarket.com"
-
 type CopyTradingStrategy struct {
-	deadTokens map[string]int64
+	broker      *broker.Broker
+	deadTokens  map[string]int64
 }
 
-func New() *CopyTradingStrategy {
+func New(b *broker.Broker) *CopyTradingStrategy {
 	return &CopyTradingStrategy{
+		broker:     b,
 		deadTokens: make(map[string]int64),
 	}
 }
@@ -39,13 +32,13 @@ func (s *CopyTradingStrategy) Name() string {
 	return "copy_trading"
 }
 
-func (s *CopyTradingStrategy) Run(ctx context.Context, sctx *strategy.Context) error {
-	cfg := sctx.Config.Strategies.CopyTrading
-	if !cfg.Enabled {
+func (s *CopyTradingStrategy) Run(ctx context.Context, b *broker.Broker) error {
+	cfg_ := b.GetConfig().Strategies.CopyTrading
+	if !cfg_.Enabled {
 		slog.Info("CopyTrading disabled")
 		return nil
 	}
-	slog.Info("CopyTrading started", "poll", cfg.PollIntervalSeconds, "min_pnl", cfg.MinPnL)
+	slog.Info("CopyTrading started", "poll", cfg_.PollIntervalSeconds, "min_pnl", cfg_.MinPnL)
 
 	for {
 		select {
@@ -53,13 +46,13 @@ func (s *CopyTradingStrategy) Run(ctx context.Context, sctx *strategy.Context) e
 			return ctx.Err()
 		default:
 		}
-		if err := s.tick(sctx); err != nil {
+		if err := s.tick(b); err != nil {
 			slog.Error("CopyTrading tick error", "error", err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Duration(cfg.PollIntervalSeconds) * time.Second):
+		case <-time.After(time.Duration(cfg_.PollIntervalSeconds) * time.Second):
 		}
 	}
 }
@@ -77,12 +70,12 @@ type candidatePos struct {
 	trader dataapi.LeaderboardEntry
 }
 
-func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
-	cfg := sctx.Config.Strategies.CopyTrading
-	risk := sctx.Config.Risk
+func (s *CopyTradingStrategy) tick(b *broker.Broker) error {
+	cfg_ := b.GetConfig().Strategies.CopyTrading
+	risk := b.GetConfig().Risk
 
-	if !sctx.Paper {
-		balance, err := sctx.Clob.GetBalance()
+	if !b.IsPaper() {
+		balance, err := b.GetBalance()
 		if err != nil {
 			slog.Warn("Could not fetch balance", "error", err)
 		} else {
@@ -90,13 +83,13 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		}
 	}
 
-	topTraders, err := sctx.DataAPI.GetTopTraders(cfg.MinPnL, 20)
+	topTraders, err := b.GetDataAPI().GetTopTraders(cfg_.MinPnL, 20)
 	if err != nil || len(topTraders) == 0 {
 		slog.Info("No qualifying traders found")
 		return nil
 	}
 
-	positions, err := sctx.DB.GetPositions()
+	positions, err := b.GetPositions()
 	if err != nil {
 		return fmt.Errorf("get positions: %w", err)
 	}
@@ -108,16 +101,18 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 
 	slog.Info("Tick start", "traders", len(topTraders), "open", openCount)
 
+	b.ClearMarketCache()
+
 	tokenSources := make(map[string][]sourceTrader)
 	var candidates []candidatePos
 	seenTokens := make(map[string]struct{})
 
 	for _, trader := range topTraders {
-		traderPositions, err := sctx.DataAPI.GetPositions(trader.Address)
+		traderPositions, err := b.GetDataAPI().GetPositions(trader.Address)
 		if err != nil {
 			continue
 		}
-		if cfg.MinTraderWinRate > 0 && len(traderPositions) > 0 {
+		if cfg_.MinTraderWinRate > 0 && len(traderPositions) > 0 {
 			profitable := 0
 			for _, tp := range traderPositions {
 				if tp.CashPnl > 0 {
@@ -125,7 +120,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 				}
 			}
 			winRate := float64(profitable) / float64(len(traderPositions))
-			if winRate < cfg.MinTraderWinRate {
+			if winRate < cfg_.MinTraderWinRate {
 				slog.Debug("Skipping trader — low win rate", "trader", trader.Address[:min(8, len(trader.Address))], "winRate", fmt.Sprintf("%.0f%%", winRate*100))
 				continue
 			}
@@ -148,10 +143,8 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		}
 	}
 
-	marketCache := make(map[string]map[string]interface{})
-
 	var totalPositionsSeen, skippedHeld, skippedDead int
-	var skippedPrice, skippedTooFar, skippedNoPrice, skippedNoMarket, skippedSport int
+	var skippedPrice, skippedTooFar, skippedNoPrice, skippedNoMarket, skippedSport, skippedBuy int
 	var openedThisTick int
 	traderCopied := make(map[string]int)
 
@@ -159,7 +152,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		if openCount >= risk.MaxOpenPositions {
 			break
 		}
-		if traderCopied[c.trader.Address] >= cfg.MaxCopyPerTrader {
+		if traderCopied[c.trader.Address] >= cfg_.MaxCopyPerTrader {
 			continue
 		}
 
@@ -177,10 +170,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			continue
 		}
 
-		if _, cached := marketCache[pos.MarketID]; !cached {
-			marketCache[pos.MarketID] = fetchClobMarket(pos.MarketID)
-		}
-		mktData := marketCache[pos.MarketID]
+		mktData := b.GetMarketData(pos.MarketID)
 
 		if mktData == nil {
 			skippedNoMarket++
@@ -193,12 +183,12 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			continue
 		}
 
-		if cfg.MaxDaysToResolution > 0 {
+		if cfg_.MaxDaysToResolution > 0 {
 			if endDateStr, _ := mktData["end_date_iso"].(string); endDateStr != "" {
 				endDt, err := time.Parse(time.RFC3339, endDateStr)
 				if err == nil {
 					daysLeft := time.Until(endDt).Hours() / 24
-					if daysLeft > cfg.MaxDaysToResolution {
+					if daysLeft > cfg_.MaxDaysToResolution {
 						skippedTooFar++
 						continue
 					}
@@ -208,6 +198,10 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 
 		buyPrice := 0.0
 		buyOutcome := pos.Outcome
+		tickSize, _ := mktData["tick_size"].(string)
+		if tickSize == "" {
+			tickSize = "0.01"
+		}
 		if tokens, ok := mktData["tokens"].([]map[string]interface{}); ok {
 			for _, t := range tokens {
 				tid, _ := t["token_id"].(string)
@@ -224,7 +218,7 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		}
 
 		if buyPrice <= 0 {
-			ob, err := sctx.Clob.GetOrderbook(pos.TokenID)
+			ob, err := b.GetOrderbook(pos.TokenID)
 			if err == nil {
 				if len(ob.Asks) > 0 {
 					buyPrice = ob.Asks[0].Price
@@ -239,34 +233,28 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			continue
 		}
 
-		tickSize, _ := mktData["tick_size"].(string)
-		if tickSize == "" {
-			tickSize = "0.01"
-		}
-		buyPrice = snapToTick(buyPrice, tickSize)
-
-		if !(cfg.PriceGuard < buyPrice && buyPrice < (1-cfg.PriceGuard)) {
+		if !(cfg_.PriceGuard < buyPrice && buyPrice < (1-cfg_.PriceGuard)) {
 			skippedPrice++
 			continue
 		}
 
-		if cfg.MinEntryPrice > 0 && buyPrice < cfg.MinEntryPrice {
+		if cfg_.MinEntryPrice > 0 && buyPrice < cfg_.MinEntryPrice {
 			skippedPrice++
 			continue
 		}
-		if cfg.MaxEntryPrice > 0 && buyPrice > cfg.MaxEntryPrice {
+		if cfg_.MaxEntryPrice > 0 && buyPrice > cfg_.MaxEntryPrice {
 			skippedPrice++
 			continue
 		}
 
 		slug, _ := mktData["slug"].(string)
 		sport := detectSport(slug, pos.Slug)
-		if isBlocked(sport, cfg.AllowedSports, cfg.BlockedSports) {
+		if isBlocked(sport, cfg_.AllowedSports, cfg_.BlockedSports) {
 			skippedSport++
 			continue
 		}
 
-		size := getPositionSize(buyPrice, cfg.SizeTiers, risk.MaxPositionUSDC)
+		size := getPositionSize(buyPrice, cfg_.SizeTiers, risk.MaxPositionUSDC)
 		if size <= 0 {
 			continue
 		}
@@ -277,67 +265,6 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		}
 
 		negRisk, _ := mktData["neg_risk"].(bool)
-		var exchangeAddr string
-		if negRisk {
-			exchangeAddr = clob.NegRiskExchangeV2
-		} else {
-			exchangeAddr = clob.ExchangeV2
-		}
-
-		orderResult, err := sctx.Clob.PlaceLimitOrder(clob.OrderArgs{
-			TokenID:  pos.TokenID,
-			Side:     "BUY",
-			Price:    buyPrice,
-			SizeUSDC: size,
-			TickSize: tickSize,
-		}, pos.MarketID, exchangeAddr)
-		if err != nil {
-			msg := err.Error()
-			if strings.Contains(msg, "does not exist") || strings.Contains(strings.ToLower(msg), "orderbook") {
-				s.deadTokens[pos.TokenID] = time.Now().Unix() + deadTokenTTL
-				slog.Debug("Marking dead orderbook", "token", pos.TokenID[:12])
-			} else if strings.Contains(msg, "not enough balance") || strings.Contains(msg, "balance is not enough") {
-				slog.Warn("Insufficient USDC balance — aborting tick")
-				return nil
-			} else {
-				slog.Error("Order error", "token", pos.TokenID, "error", err)
-			}
-			continue
-		}
-
-		var orderID string
-		if orderResult != nil {
-			if oid, ok := orderResult["orderID"].(string); ok {
-				orderID = oid
-			} else if oid, ok := orderResult["id"].(string); ok {
-				orderID = oid
-			}
-		}
-
-		filledSize, fillStatus := size, "filled"
-		if orderID != "" {
-			time.Sleep(2 * time.Second)
-			orderInfo, orderErr := sctx.Clob.GetOrder(orderID)
-			if orderErr != nil {
-				slog.Warn("Could not verify order fill", "orderID", orderID, "error", orderErr)
-			} else if orderInfo != nil {
-				fillStatus = orderInfo.Status
-				if orderInfo.SizeFilled > 0 && orderInfo.Price > 0 {
-					filledSize = orderInfo.SizeFilled * orderInfo.Price
-				}
-				slog.Info("Order status", "orderID", orderID, "status", fillStatus, "filledUSDC", filledSize)
-			}
-		}
-
-		if fillStatus != "FILLED" && fillStatus != "filled" && fillStatus != "MATCHED" && fillStatus != "LIVE" && !sctx.Paper {
-			slog.Warn("Order not filled, skipping trade record", "orderID", orderID, "status", fillStatus)
-			continue
-		}
-
-		if filledSize < 1.0 {
-			slog.Warn("Fill too small, skipping trade record", "orderID", orderID, "filledSize", filledSize)
-			continue
-		}
 
 		sourceJSON := "[]"
 		if sources, ok := tokenSources[pos.TokenID]; ok && len(sources) > 0 {
@@ -346,31 +273,28 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			}
 		}
 
-		if _, dbErr := sctx.DB.RecordTrade(&db.Trade{
-			Ts:         time.Now().Unix(),
-			MarketID:   pos.MarketID,
+		result, buyErr := b.Buy(context.Background(), broker.BuyRequest{
 			TokenID:    pos.TokenID,
-			Side:       "BUY",
+			MarketID:   pos.MarketID,
 			Outcome:    buyOutcome,
 			Price:      buyPrice,
-			SizeUSDC:   filledSize,
-			OrderID:    orderID,
-			Paper:      sctx.Paper,
+			SizeUSDC:   size,
+			TickSize:   tickSize,
+			NegRisk:    negRisk,
 			SourceJSON: sourceJSON,
-			Status:     "filled",
-		}); dbErr != nil {
-			slog.Error("record trade", "error", dbErr)
-		}
-
-		if dbErr := sctx.DB.UpsertPosition(&db.Position{
-			TokenID:   pos.TokenID,
-			MarketID:  pos.MarketID,
-			Outcome:   buyOutcome,
-			Size:      filledSize / buyPrice,
-			AvgPrice:  buyPrice,
-			UpdatedTs: time.Now().Unix(),
-		}); dbErr != nil {
-			slog.Error("upsert position", "error", dbErr)
+		})
+		if buyErr != nil {
+			if isDeadTokenError(buyErr) {
+				s.deadTokens[pos.TokenID] = time.Now().Unix() + deadTokenTTL
+				slog.Debug("Marking dead orderbook", "token", pos.TokenID[:min(12, len(pos.TokenID))])
+			} else if strings.Contains(buyErr.Error(), "insufficient balance") {
+				slog.Warn("Insufficient USDC balance — aborting tick")
+				return nil
+			} else {
+				slog.Error("Buy error", "token", pos.TokenID[:min(12, len(pos.TokenID))], "error", buyErr)
+			}
+			skippedBuy++
+			continue
 		}
 
 		question := pos.TokenID[:min(20, len(pos.TokenID))]
@@ -378,31 +302,24 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 			question = q
 		}
 
-		if dbErr := sctx.DB.UpsertMarketMeta(&db.MarketMeta{
-			ConditionID: pos.MarketID,
-			Question:    question,
-			Slug:        slug,
-		}); dbErr != nil {
-			slog.Error("upsert market meta", "error", dbErr)
-		}
-
 		paperTag := ""
-		if sctx.Paper {
+		if b.IsPaper() {
 			paperTag = " [PAPER]"
 		}
 		slog.Info("Copied",
 			"trader", c.trader.Address[:min(8, len(c.trader.Address))],
 			"token", pos.TokenID[:min(8, len(pos.TokenID))],
 			"outcome", buyOutcome,
-			"price", buyPrice,
+			"price", result.Price,
 			"size", size,
+			"filled", result.FilledSize,
 			"sources", len(tokenSources[pos.TokenID]),
 			"paper", paperTag,
 		)
 
-		if sctx.Notifier != nil {
+		if b.GetNotifier() != nil {
 			mode := "LIVE"
-			if sctx.Paper {
+			if b.IsPaper() {
 				mode = "PAPER"
 			}
 			urlLine := ""
@@ -414,8 +331,8 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 				truncQ = truncQ[:80]
 			}
 			msg := fmt.Sprintf("%s — Position opened\n%s\n-> Outcome: %s\n-> Price: %.3f  |  Size: $%.2f  |  %d top traders%s",
-				mode, truncQ, buyOutcome, buyPrice, size, len(tokenSources[pos.TokenID]), urlLine)
-			sctx.Notifier.Send(msg)
+				mode, truncQ, buyOutcome, result.Price, size, len(tokenSources[pos.TokenID]), urlLine)
+			b.Notify(msg)
 		}
 
 		traderCopied[c.trader.Address]++
@@ -434,115 +351,17 @@ func (s *CopyTradingStrategy) tick(sctx *strategy.Context) error {
 		"price", skippedPrice,
 		"too_far", skippedTooFar,
 		"sport", skippedSport,
+		"buy_err", skippedBuy,
 	)
 	return nil
 }
 
-func fetchClobMarket(conditionID string) map[string]interface{} {
-	url := clobREST + "/markets/" + conditionID
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil
+func isDeadTokenError(err error) bool {
+	if err == nil {
+		return false
 	}
-	req.Header.Set("User-Agent", "vagustrader/0.1")
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("CLOB market fetch failed", "condition", conditionID[:min(12, len(conditionID))], "error", err)
-		return nil
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil
-	}
-
-	endDate, _ := raw["end_date_iso"].(string)
-	if endDate == "" {
-		if v, ok := raw["endDate"].(string); ok {
-			endDate = v
-		}
-	}
-	question, _ := raw["question"].(string)
-	slug, _ := raw["slug"].(string)
-	active, _ := raw["active"].(bool)
-	closed, _ := raw["closed"].(bool)
-	tickSize, _ := raw["tick_size"].(string)
-
-	var parsedTokens []map[string]interface{}
-	if rawTokens, ok := raw["tokens"].([]interface{}); ok {
-		for _, t := range rawTokens {
-			tm, ok := t.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			parsedTokens = append(parsedTokens, map[string]interface{}{
-				"token_id": stringFromMap(tm, "token_id"),
-				"price":    floatFromMap(tm, "price"),
-				"outcome":  stringFromMap(tm, "outcome"),
-			})
-		}
-	}
-
-	negRisk, _ := raw["neg_risk"].(bool)
-
-	return map[string]interface{}{
-		"question":     question,
-		"slug":         slug,
-		"active":       active && !closed,
-		"closed":       closed,
-		"end_date_iso": endDate,
-		"tick_size":    tickSize,
-		"neg_risk":     negRisk,
-		"tokens":       parsedTokens,
-	}
-}
-
-func stringFromMap(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
-}
-
-func floatFromMap(m map[string]interface{}, key string) float64 {
-	switch v := m[key].(type) {
-	case float64:
-		return v
-	case json.Number:
-		f, _ := v.Float64()
-		return f
-	case string:
-		f, _ := parseFloat(v)
-		return f
-	default:
-		return 0
-	}
-}
-
-func parseFloat(s string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscanf(s, "%f", &f)
-	return f, err
-}
-
-func snapToTick(price float64, tickSize string) float64 {
-	ts, err := fmt.Sscanf(tickSize, "%f", new(float64))
-	if err != nil || ts != 1 {
-		ts = 1
-		_ = ts
-	}
-	var tick float64
-	fmt.Sscanf(tickSize, "%f", &tick)
-	if tick <= 0 {
-		tick = 0.01
-	}
-	steps := math.Round(price / tick)
-	snapped := steps * tick
-	return math.Round(snapped*1e8) / 1e8
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "dead orderbook") || strings.Contains(msg, "does not exist")
 }
 
 var sportPrefixes = map[string]string{
@@ -612,4 +431,11 @@ func getPositionSize(price float64, tiers []cfg.SizeTier, maxSize float64) float
 		}
 	}
 	return maxSize
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

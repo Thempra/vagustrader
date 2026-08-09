@@ -29,5 +29,9 @@ strategies:
         size_usdc: 3.0
     min_trader_win_rate: 0.60
 
+  settlement:
+    enabled: true
+    interval_seconds: 300
+
 markets:
   min_liquidity_usdc: 1000
