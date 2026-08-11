@@ -6,9 +6,8 @@ services:
     command: vagustrader run --paper
     env_file: .env
     volumes:
-      - ./config.yml:/app/config.yml:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - data:/app/data
+      - logs:/app/logs
     restart: unless-stopped
     logging:
       driver: json-file
@@ -20,8 +19,11 @@ services:
     build: .
     command: vagustrader dashboard --config /app/config.yml
     volumes:
-      - ./config.yml:/app/config.yml:ro
-      - ./data:/app/data
+      - data:/app/data
     ports:
       - "18080:8080"
     restart: unless-stopped
+
+volumes:
+  data:
+  logs:
