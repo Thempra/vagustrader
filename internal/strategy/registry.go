@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/vagustrader/vagustrader/internal/strategy/arbitrage"
+	"github.com/vagustrader/vagustrader/internal/strategy/contrarian"
 	"github.com/vagustrader/vagustrader/internal/strategy/copytrading"
 	"github.com/vagustrader/vagustrader/internal/strategy/settlement"
+	"github.com/vagustrader/vagustrader/internal/strategy/underhunter"
+	"github.com/vagustrader/vagustrader/internal/strategy/whaleconsensus"
 )
 
 type Factory func() Strategy
@@ -16,6 +20,18 @@ var registry = map[string]Factory{
 	},
 	"settlement": func() Strategy {
 		return settlement.New(nil)
+	},
+	"under_hunter": func() Strategy {
+		return underhunter.New()
+	},
+	"whale_consensus": func() Strategy {
+		return whaleconsensus.New()
+	},
+	"arbitrage": func() Strategy {
+		return arbitrage.New()
+	},
+	"contrarian": func() Strategy {
+		return contrarian.New()
 	},
 }
 

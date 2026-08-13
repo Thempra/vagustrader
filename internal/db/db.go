@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS market_meta (condition_id TEXT PRIMARY KEY, question 
 CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, market_id TEXT NOT NULL, token_id TEXT NOT NULL, side TEXT NOT NULL, price REAL NOT NULL, size_usdc REAL NOT NULL, order_id TEXT, paper INTEGER NOT NULL DEFAULT 0, result REAL);
 CREATE TABLE IF NOT EXISTS positions (token_id TEXT PRIMARY KEY, market_id TEXT NOT NULL, outcome TEXT NOT NULL, size REAL NOT NULL, avg_price REAL NOT NULL, updated_ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pnl_snapshots (date TEXT PRIMARY KEY, realized REAL NOT NULL, unrealized REAL NOT NULL, total_trades INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS paper_wallets (strategy TEXT PRIMARY KEY, initial_balance REAL NOT NULL DEFAULT 10000.0, spent REAL NOT NULL DEFAULT 0.0, recovered REAL NOT NULL DEFAULT 0.0, updated_ts INTEGER NOT NULL);
 `
 
 type DB struct {
@@ -34,6 +35,7 @@ type Trade struct {
 	Result     sql.NullFloat64
 	SourceJSON string
 	Status     string
+	Strategy   string
 }
 
 type Position struct {
@@ -42,6 +44,7 @@ type Position struct {
 	Outcome   string
 	Size      float64
 	AvgPrice  float64
+	Strategy  string
 	UpdatedTs int64
 }
 
@@ -53,9 +56,19 @@ type MarketMeta struct {
 
 type PNLSnapshot struct {
 	Date        string
+	Strategy    string
 	Realized    float64
 	Unrealized  float64
 	TotalTrades int
+}
+
+type PaperWallet struct {
+	Strategy       string
+	InitialBalance float64
+	Spent          float64
+	Recovered      float64
+	Balance        float64
+	UpdatedTs      int64
 }
 
 func Init(path string) (*DB, error) {
@@ -83,10 +96,62 @@ func Init(path string) (*DB, error) {
 	ldb.Exec("ALTER TABLE trades ADD COLUMN source_json TEXT")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN outcome TEXT")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN status TEXT")
+	ldb.Exec("ALTER TABLE trades ADD COLUMN strategy TEXT")
 	ldb.Exec("UPDATE trades SET status = 'filled' WHERE result IS NOT NULL AND status IS NULL")
 	ldb.Exec("UPDATE trades SET status = 'placed' WHERE result IS NULL AND status IS NULL")
 
+	migratePositionsForStrategy(ldb)
+	migratePNLSnapshotsForStrategy(ldb)
+	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)")
+	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_positions_strategy ON positions(strategy)")
+
 	return &DB{ldb}, nil
+}
+
+func migratePositionsForStrategy(ldb *sql.DB) {
+	var count int
+	ldb.QueryRow("SELECT COUNT(*) FROM pragma_table_info('positions') WHERE name='strategy'").Scan(&count)
+	if count > 0 {
+		return
+	}
+
+	ldb.Exec(`CREATE TABLE positions_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token_id TEXT NOT NULL,
+		market_id TEXT NOT NULL,
+		outcome TEXT NOT NULL,
+		size REAL NOT NULL,
+		avg_price REAL NOT NULL,
+		strategy TEXT NOT NULL DEFAULT 'copy_trading',
+		updated_ts INTEGER NOT NULL,
+		UNIQUE(token_id, strategy)
+	)`)
+	ldb.Exec(`INSERT INTO positions_new (token_id, market_id, outcome, size, avg_price, strategy, updated_ts)
+		SELECT token_id, market_id, outcome, size, avg_price, 'copy_trading', updated_ts FROM positions`)
+	ldb.Exec(`DROP TABLE positions`)
+	ldb.Exec(`ALTER TABLE positions_new RENAME TO positions`)
+}
+
+func migratePNLSnapshotsForStrategy(ldb *sql.DB) {
+	var count int
+	ldb.QueryRow("SELECT COUNT(*) FROM pragma_table_info('pnl_snapshots') WHERE name='strategy'").Scan(&count)
+	if count > 0 {
+		return
+	}
+
+	ldb.Exec(`CREATE TABLE pnl_snapshots_new (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		date TEXT NOT NULL,
+		strategy TEXT NOT NULL DEFAULT 'copy_trading',
+		realized REAL NOT NULL,
+		unrealized REAL NOT NULL,
+		total_trades INTEGER NOT NULL,
+		UNIQUE(date, strategy)
+	)`)
+	ldb.Exec(`INSERT INTO pnl_snapshots_new (date, strategy, realized, unrealized, total_trades)
+		SELECT date, 'copy_trading', realized, unrealized, total_trades FROM pnl_snapshots`)
+	ldb.Exec(`DROP TABLE pnl_snapshots`)
+	ldb.Exec(`ALTER TABLE pnl_snapshots_new RENAME TO pnl_snapshots`)
 }
 
 func (db *DB) RecordTrade(t *Trade) (int64, error) {
@@ -95,8 +160,8 @@ func (db *DB) RecordTrade(t *Trade) (int64, error) {
 		paper = 1
 	}
 	res, err := db.Exec(
-		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON, t.Status,
+		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json, status, strategy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON, t.Status, t.Strategy,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert trade: %w", err)
@@ -105,20 +170,24 @@ func (db *DB) RecordTrade(t *Trade) (int64, error) {
 }
 
 func (db *DB) UpsertPosition(p *Position) error {
+	strategy := p.Strategy
+	if strategy == "" {
+		strategy = "copy_trading"
+	}
 	var existingSize, existingAvg float64
-	err := db.QueryRow("SELECT size, avg_price FROM positions WHERE token_id = ?", p.TokenID).Scan(&existingSize, &existingAvg)
+	err := db.QueryRow("SELECT size, avg_price FROM positions WHERE token_id = ? AND strategy = ?", p.TokenID, strategy).Scan(&existingSize, &existingAvg)
 	if err == sql.ErrNoRows {
 		_, err = db.Exec(
-			"INSERT INTO positions (token_id, market_id, outcome, size, avg_price, updated_ts) VALUES (?, ?, ?, ?, ?, ?)",
-			p.TokenID, p.MarketID, p.Outcome, p.Size, p.AvgPrice, p.UpdatedTs,
+			"INSERT INTO positions (token_id, market_id, outcome, size, avg_price, strategy, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			p.TokenID, p.MarketID, p.Outcome, p.Size, p.AvgPrice, strategy, p.UpdatedTs,
 		)
 	} else if err == nil {
 		totalCost := existingSize*existingAvg + p.Size*p.AvgPrice
 		totalSize := existingSize + p.Size
 		newAvg := totalCost / totalSize
 		_, err = db.Exec(
-			"UPDATE positions SET market_id=?, outcome=?, size=?, avg_price=?, updated_ts=? WHERE token_id=?",
-			p.MarketID, p.Outcome, totalSize, newAvg, p.UpdatedTs, p.TokenID,
+			"UPDATE positions SET market_id=?, outcome=?, size=?, avg_price=?, updated_ts=? WHERE token_id=? AND strategy=?",
+			p.MarketID, p.Outcome, totalSize, newAvg, p.UpdatedTs, p.TokenID, strategy,
 		)
 	}
 	if err != nil {
@@ -146,8 +215,16 @@ func (db *DB) DeletePosition(tokenID string) error {
 	return nil
 }
 
+func (db *DB) DeletePositionStrategy(tokenID, strategy string) error {
+	_, err := db.Exec("DELETE FROM positions WHERE token_id = ? AND strategy = ?", tokenID, strategy)
+	if err != nil {
+		return fmt.Errorf("delete position strategy: %w", err)
+	}
+	return nil
+}
+
 func (db *DB) GetPositions() ([]Position, error) {
-	rows, err := db.Query("SELECT token_id, market_id, outcome, size, avg_price, updated_ts FROM positions ORDER BY updated_ts DESC")
+	rows, err := db.Query("SELECT token_id, market_id, outcome, size, avg_price, COALESCE(strategy,'copy_trading'), updated_ts FROM positions ORDER BY updated_ts DESC")
 	if err != nil {
 		return nil, fmt.Errorf("query positions: %w", err)
 	}
@@ -156,7 +233,25 @@ func (db *DB) GetPositions() ([]Position, error) {
 	var positions []Position
 	for rows.Next() {
 		var p Position
-		if err := rows.Scan(&p.TokenID, &p.MarketID, &p.Outcome, &p.Size, &p.AvgPrice, &p.UpdatedTs); err != nil {
+		if err := rows.Scan(&p.TokenID, &p.MarketID, &p.Outcome, &p.Size, &p.AvgPrice, &p.Strategy, &p.UpdatedTs); err != nil {
+			return nil, fmt.Errorf("scan position: %w", err)
+		}
+		positions = append(positions, p)
+	}
+	return positions, rows.Err()
+}
+
+func (db *DB) GetPositionsByStrategy(strategy string) ([]Position, error) {
+	rows, err := db.Query("SELECT token_id, market_id, outcome, size, avg_price, strategy, updated_ts FROM positions WHERE strategy = ? ORDER BY updated_ts DESC", strategy)
+	if err != nil {
+		return nil, fmt.Errorf("query positions by strategy: %w", err)
+	}
+	defer rows.Close()
+
+	var positions []Position
+	for rows.Next() {
+		var p Position
+		if err := rows.Scan(&p.TokenID, &p.MarketID, &p.Outcome, &p.Size, &p.AvgPrice, &p.Strategy, &p.UpdatedTs); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		positions = append(positions, p)
@@ -168,9 +263,9 @@ func (db *DB) GetTodayTrades(dateStr string) ([]Trade, error) {
 	var rows *sql.Rows
 	var err error
 	if dateStr == "2000-01-01" {
-		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, '') FROM trades ORDER BY ts DESC")
+		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades ORDER BY ts DESC")
 	} else {
-		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, '') FROM trades WHERE date(ts, 'unixepoch') = ? ORDER BY ts DESC", dateStr)
+		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE date(ts, 'unixepoch') = ? ORDER BY ts DESC", dateStr)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query trades: %w", err)
@@ -181,9 +276,35 @@ func (db *DB) GetTodayTrades(dateStr string) ([]Trade, error) {
 }
 
 func (db *DB) GetRecentTrades(limit int) ([]Trade, error) {
-	rows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, '') FROM trades ORDER BY ts DESC LIMIT ?", limit)
+	rows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades ORDER BY ts DESC LIMIT ?", limit)
 	if err != nil {
 		return nil, fmt.Errorf("query recent trades: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTrades(rows)
+}
+
+func (db *DB) GetTodayTradesByStrategy(strategy, dateStr string) ([]Trade, error) {
+	var rows *sql.Rows
+	var err error
+	if dateStr == "2000-01-01" {
+		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? ORDER BY ts DESC", strategy)
+	} else {
+		rows, err = db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? AND date(ts, 'unixepoch') = ? ORDER BY ts DESC", strategy, dateStr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query trades by strategy: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTrades(rows)
+}
+
+func (db *DB) GetRecentTradesByStrategy(strategy string, limit int) ([]Trade, error) {
+	rows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? ORDER BY ts DESC LIMIT ?", strategy, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent trades by strategy: %w", err)
 	}
 	defer rows.Close()
 
@@ -195,7 +316,7 @@ func scanTrades(rows *sql.Rows) ([]Trade, error) {
 	for rows.Next() {
 		var t Trade
 		var paper int
-		if err := rows.Scan(&t.ID, &t.Ts, &t.MarketID, &t.TokenID, &t.Side, &t.Outcome, &t.Price, &t.SizeUSDC, &t.OrderID, &paper, &t.Result, &t.SourceJSON); err != nil {
+		if err := rows.Scan(&t.ID, &t.Ts, &t.MarketID, &t.TokenID, &t.Side, &t.Outcome, &t.Price, &t.SizeUSDC, &t.OrderID, &paper, &t.Result, &t.SourceJSON, &t.Strategy); err != nil {
 			return nil, fmt.Errorf("scan trade: %w", err)
 		}
 		t.Paper = paper == 1
@@ -228,9 +349,13 @@ func (db *DB) GetMarketMeta(conditionID string) (string, string, error) {
 }
 
 func (db *DB) SavePNLSnapshot(s *PNLSnapshot) error {
+	strategy := s.Strategy
+	if strategy == "" {
+		strategy = "copy_trading"
+	}
 	_, err := db.Exec(
-		"INSERT INTO pnl_snapshots (date, realized, unrealized, total_trades) VALUES (?, ?, ?, ?) ON CONFLICT(date) DO UPDATE SET realized=excluded.realized, unrealized=excluded.unrealized, total_trades=excluded.total_trades",
-		s.Date, s.Realized, s.Unrealized, s.TotalTrades,
+		"INSERT INTO pnl_snapshots (date, strategy, realized, unrealized, total_trades) VALUES (?, ?, ?, ?, ?) ON CONFLICT(date, strategy) DO UPDATE SET realized=excluded.realized, unrealized=excluded.unrealized, total_trades=excluded.total_trades",
+		s.Date, strategy, s.Realized, s.Unrealized, s.TotalTrades,
 	)
 	if err != nil {
 		return fmt.Errorf("save pnl snapshot: %w", err)
@@ -239,7 +364,7 @@ func (db *DB) SavePNLSnapshot(s *PNLSnapshot) error {
 }
 
 func (db *DB) GetPNLSnapshots(limit int) ([]PNLSnapshot, error) {
-	rows, err := db.Query("SELECT date, realized, unrealized, total_trades FROM pnl_snapshots ORDER BY date DESC LIMIT ?", limit)
+	rows, err := db.Query("SELECT date, COALESCE(strategy,'copy_trading'), realized, unrealized, total_trades FROM pnl_snapshots ORDER BY date DESC LIMIT ?", limit)
 	if err != nil {
 		return nil, fmt.Errorf("query pnl snapshots: %w", err)
 	}
@@ -248,7 +373,25 @@ func (db *DB) GetPNLSnapshots(limit int) ([]PNLSnapshot, error) {
 	var snapshots []PNLSnapshot
 	for rows.Next() {
 		var s PNLSnapshot
-		if err := rows.Scan(&s.Date, &s.Realized, &s.Unrealized, &s.TotalTrades); err != nil {
+		if err := rows.Scan(&s.Date, &s.Strategy, &s.Realized, &s.Unrealized, &s.TotalTrades); err != nil {
+			return nil, fmt.Errorf("scan pnl snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	return snapshots, rows.Err()
+}
+
+func (db *DB) GetPNLSnapshotsByStrategy(strategy string, limit int) ([]PNLSnapshot, error) {
+	rows, err := db.Query("SELECT date, strategy, realized, unrealized, total_trades FROM pnl_snapshots WHERE strategy = ? ORDER BY date DESC LIMIT ?", strategy, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query pnl snapshots by strategy: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []PNLSnapshot
+	for rows.Next() {
+		var s PNLSnapshot
+		if err := rows.Scan(&s.Date, &s.Strategy, &s.Realized, &s.Unrealized, &s.TotalTrades); err != nil {
 			return nil, fmt.Errorf("scan pnl snapshot: %w", err)
 		}
 		snapshots = append(snapshots, s)
@@ -266,4 +409,92 @@ func (db *DB) GetRealizedPnL() (float64, error) {
 		return 0, nil
 	}
 	return total.Float64, nil
+}
+
+func (db *DB) GetRealizedPnLByStrategy(strategy string) (float64, error) {
+	var total sql.NullFloat64
+	err := db.QueryRow("SELECT SUM(realized) FROM pnl_snapshots WHERE strategy = ?", strategy).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("query realized pnl by strategy: %w", err)
+	}
+	if !total.Valid {
+		return 0, nil
+	}
+	return total.Float64, nil
+}
+
+func (db *DB) InitPaperWallet(strategy string, initial float64) error {
+	_, err := db.Exec(
+		"INSERT OR IGNORE INTO paper_wallets (strategy, initial_balance, spent, recovered, updated_ts) VALUES (?, ?, 0, 0, ?)",
+		strategy, initial, 0,
+	)
+	if err != nil {
+		return fmt.Errorf("init paper wallet: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) DeductWallet(strategy string, amount float64) error {
+	_, err := db.Exec(
+		"UPDATE paper_wallets SET spent = spent + ?, updated_ts = ? WHERE strategy = ?",
+		amount, 0, strategy,
+	)
+	if err != nil {
+		return fmt.Errorf("deduct wallet: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) CreditWallet(strategy string, amount float64) error {
+	_, err := db.Exec(
+		"UPDATE paper_wallets SET recovered = recovered + ?, updated_ts = ? WHERE strategy = ?",
+		amount, 0, strategy,
+	)
+	if err != nil {
+		return fmt.Errorf("credit wallet: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) GetWallet(strategy string) (*PaperWallet, error) {
+	var w PaperWallet
+	var ts int64
+	err := db.QueryRow(
+		"SELECT strategy, initial_balance, spent, recovered, updated_ts FROM paper_wallets WHERE strategy = ?",
+		strategy,
+	).Scan(&w.Strategy, &w.InitialBalance, &w.Spent, &w.Recovered, &ts)
+	if err == sql.ErrNoRows {
+		return &PaperWallet{
+			Strategy:       strategy,
+			InitialBalance: 10000.0,
+			Spent:          0,
+			Recovered:      0,
+			Balance:        10000.0,
+		}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get wallet: %w", err)
+	}
+	w.Balance = w.InitialBalance - w.Spent + w.Recovered
+	w.UpdatedTs = ts
+	return &w, nil
+}
+
+func (db *DB) GetAllWallets() ([]PaperWallet, error) {
+	rows, err := db.Query("SELECT strategy, initial_balance, spent, recovered, updated_ts FROM paper_wallets ORDER BY strategy")
+	if err != nil {
+		return nil, fmt.Errorf("query wallets: %w", err)
+	}
+	defer rows.Close()
+
+	var wallets []PaperWallet
+	for rows.Next() {
+		var w PaperWallet
+		if err := rows.Scan(&w.Strategy, &w.InitialBalance, &w.Spent, &w.Recovered, &w.UpdatedTs); err != nil {
+			return nil, fmt.Errorf("scan wallet: %w", err)
+		}
+		w.Balance = w.InitialBalance - w.Spent + w.Recovered
+		wallets = append(wallets, w)
+	}
+	return wallets, rows.Err()
 }

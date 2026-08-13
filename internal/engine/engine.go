@@ -67,6 +67,16 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	brk := broker.New(clobClient, dataAPI, gammaClient, database, &e.config, e.paper, notifier)
 
+	if e.paper {
+		for _, s := range e.strategies {
+			if s.Name() != "settlement" {
+				database.InitPaperWallet(s.Name(), 10000.0)
+				w, _ := database.GetWallet(s.Name())
+				slog.Info("Paper wallet initialized", "strategy", s.Name(), "balance", w.Balance)
+			}
+		}
+	}
+
 	if !e.paper {
 		tradingCount := 0
 		for _, s := range e.strategies {

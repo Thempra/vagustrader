@@ -70,13 +70,52 @@ type CopyTradingConfig struct {
 }
 
 type StrategiesConfig struct {
-	CopyTrading CopyTradingConfig `yaml:"copy_trading"`
-	Settlement  SettlementConfig  `yaml:"settlement"`
+	CopyTrading     CopyTradingConfig     `yaml:"copy_trading"`
+	Settlement      SettlementConfig      `yaml:"settlement"`
+	UnderHunter     UnderHunterConfig     `yaml:"under_hunter"`
+	WhaleConsensus  WhaleConsensusConfig  `yaml:"whale_consensus"`
+	Arbitrage       ArbitrageConfig       `yaml:"arbitrage"`
+	Contrarian      ContrarianConfig      `yaml:"contrarian"`
 }
 
 type SettlementConfig struct {
 	Enabled          bool `yaml:"enabled"`
 	IntervalSeconds int  `yaml:"interval_seconds"`
+}
+
+type UnderHunterConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	PollIntervalSeconds int      `yaml:"poll_interval_seconds"`
+	MinPrice            float64  `yaml:"min_price"`
+	MaxPrice            float64  `yaml:"max_price"`
+	MaxPosition         float64  `yaml:"max_position"`
+	KellyFraction       float64  `yaml:"kelly_fraction"`
+	AllowedSports       []string `yaml:"allowed_sports"`
+}
+
+type WhaleConsensusConfig struct {
+	Enabled             bool    `yaml:"enabled"`
+	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
+	MinTraders          int     `yaml:"min_traders"`
+	MinPnL              float64 `yaml:"min_pnl"`
+	MaxPosition         float64 `yaml:"max_position"`
+	KellyFraction       float64 `yaml:"kelly_fraction"`
+}
+
+type ArbitrageConfig struct {
+	Enabled             bool    `yaml:"enabled"`
+	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
+	MinProfitUSDC       float64 `yaml:"min_profit_usdc"`
+	MaxPosition         float64 `yaml:"max_position"`
+}
+
+type ContrarianConfig struct {
+	Enabled               bool    `yaml:"enabled"`
+	PollIntervalSeconds   int     `yaml:"poll_interval_seconds"`
+	PriceChangeThreshold  float64 `yaml:"price_change_threshold"`
+	LookbackMinutes       int     `yaml:"lookback_minutes"`
+	MaxPosition           float64 `yaml:"max_position"`
+	KellyFraction         float64 `yaml:"kelly_fraction"`
 }
 
 type MarketsConfig struct {
@@ -112,6 +151,36 @@ func LoadAppConfig(path string) AppConfig {
 			Settlement: SettlementConfig{
 				Enabled:          true,
 				IntervalSeconds: 300,
+			},
+			UnderHunter: UnderHunterConfig{
+				Enabled:             false,
+				PollIntervalSeconds: 120,
+				MinPrice:            0.30,
+				MaxPrice:            0.55,
+				MaxPosition:         10.0,
+				KellyFraction:       0.25,
+			},
+			WhaleConsensus: WhaleConsensusConfig{
+				Enabled:             false,
+				PollIntervalSeconds: 180,
+				MinTraders:          2,
+				MinPnL:              5000,
+				MaxPosition:         10.0,
+				KellyFraction:       0.25,
+			},
+			Arbitrage: ArbitrageConfig{
+				Enabled:             false,
+				PollIntervalSeconds: 60,
+				MinProfitUSDC:       0.10,
+				MaxPosition:         50.0,
+			},
+			Contrarian: ContrarianConfig{
+				Enabled:              false,
+				PollIntervalSeconds:  120,
+				PriceChangeThreshold: 0.10,
+				LookbackMinutes:      60,
+				MaxPosition:          5.0,
+				KellyFraction:        0.15,
 			},
 		},
 		Markets: MarketsConfig{

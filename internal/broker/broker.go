@@ -54,6 +54,7 @@ func New(
 }
 
 func (b *Broker) GetDataAPI() *dataapi.Client   { return b.dataAPI }
+func (b *Broker) GetGamma() *gamma.Client        { return b.gamma }
 func (b *Broker) GetConfig() *cfg.AppConfig      { return b.config }
 func (b *Broker) IsPaper() bool                  { return b.paper }
 func (b *Broker) GetNotifier() *notify.Notifier   { return b.notifier }
@@ -61,6 +62,10 @@ func (b *Broker) GetDatabase() *db.DB             { return b.database }
 
 func (b *Broker) GetPositions() ([]db.Position, error) {
 	return b.database.GetPositions()
+}
+
+func (b *Broker) GetPositionsByStrategy(strategy string) ([]db.Position, error) {
+	return b.database.GetPositionsByStrategy(strategy)
 }
 
 func (b *Broker) IsHeld(tokenID string) bool {
@@ -76,8 +81,37 @@ func (b *Broker) IsHeld(tokenID string) bool {
 	return false
 }
 
+func (b *Broker) IsHeldByStrategy(tokenID, strategy string) bool {
+	pos, err := b.database.GetPositionsByStrategy(strategy)
+	if err != nil {
+		return false
+	}
+	for _, p := range pos {
+		if p.TokenID == tokenID {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Broker) GetBalance() (float64, error) {
 	return b.clob.GetBalance()
+}
+
+func (b *Broker) GetStrategyBalance(strategy string) (float64, error) {
+	wallet, err := b.database.GetWallet(strategy)
+	if err != nil {
+		return 0, err
+	}
+	return wallet.Balance, nil
+}
+
+func (b *Broker) DeletePositionStrategy(tokenID, strategy string) error {
+	return b.database.DeletePositionStrategy(tokenID, strategy)
+}
+
+func (b *Broker) CreditWallet(strategy string, amount float64) error {
+	return b.database.CreditWallet(strategy, amount)
 }
 
 func (b *Broker) ClearMarketCache() {

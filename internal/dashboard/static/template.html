@@ -17,6 +17,22 @@
   </div>
 </div>
 <div id="main-area" class="main-area">
+<div class="strategy-tabs">
+  {{range .Strategies}}
+  <a href="/?strategy={{.Name}}" class="strat-tab {{if eq .Name $.ActiveStrategy}}active{{end}}">
+    <span class="strat-name">{{.DisplayName}}</span>
+    <span class="strat-balance">{{printf "$%.0f" .Balance}}</span>
+  </a>
+  {{end}}
+</div>
+{{if .Wallet}}
+<div class="wallet-card">
+  Initial: {{printf "$%.0f" .Wallet.InitialBalance}} |
+  Spent: {{printf "$%.0f" .Wallet.Spent}} |
+  Balance: {{printf "$%.0f" .Wallet.Balance}} |
+  Recovered: {{printf "$%.0f" .Wallet.Recovered}}
+</div>
+{{end}}
 <div class="header">
 <div class="brand">&#x2B21; VAGUSTRADER</div>
 <div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val blue">{{.PositionCount}} <span style="font-size:11px;color:var(--dim)">/ ${{.TotalCost | printf "%.0f"}}</span></div></div>
@@ -52,9 +68,9 @@
 <div class="vdivider" id="vdivider"></div>
 <div class="panel panel-trades">
 <div class="panel-header">Balances <span class="count">{{.TradeDisplayed}} / {{.TradeCount}}</span>
-<a href="/csv" class="btn-csv" download="vagustrader_trades.csv">&#x2913; CSV</a></div>
+<a href="/csv?strategy={{.ActiveStrategy}}" class="btn-csv" download="vagustrader_trades.csv">&#x2913; CSV</a></div>
 <div class="tbl-wrap">
-<table id="tbl-bal"><colgroup><col><col><col><col><col><col><col><col><col></colgroup>
+<table id="tbl-bal"><colgroup><col><col><col><col><col><col><col><col><col><col></colgroup>
 <thead><tr>
 <th>Date<span class="resize-handle"></span></th>
 <th><span class="resize-handle"></span></th>
@@ -65,6 +81,7 @@
 <th style="text-align:right">Recovered<span class="resize-handle"></span></th>
 <th style="text-align:right">Gain<span class="resize-handle"></span></th>
 <th style="text-align:center">Result</th>
+<th>Strategy</th>
 </tr></thead>
 <tbody>
 {{.BalanceRows}}
@@ -127,6 +144,10 @@
     <div class="section">
       <div class="section-title">Paper vs Live</div>
       <div class="tbl-wrap"><table><thead><tr><th>Mode</th><th class="num">Trades</th><th class="num">Wins</th><th class="num">Win Rate</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.PaperLiveStatsRow}}</tbody></table></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Per-Strategy</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Strategy</th><th class="num">Trades</th><th class="num">Win Rate</th><th class="num">Invested</th><th class="num">P&amp;L</th></tr></thead><tbody>{{.StrategyStatsRows}}</tbody></table></div>
     </div>
   </div>
 </div>
