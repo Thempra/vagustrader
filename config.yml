@@ -33,5 +33,36 @@ strategies:
     enabled: true
     interval_seconds: 300
 
+  under_hunter:
+    enabled: true
+    poll_interval_seconds: 120
+    min_price: 0.30
+    max_price: 0.55
+    max_position: 10.0
+    kelly_fraction: 0.25
+    allowed_sports: []
+
+  whale_consensus:
+    enabled: true
+    poll_interval_seconds: 180
+    min_traders: 2
+    min_pnl: 5000
+    max_position: 10.0
+    kelly_fraction: 0.25
+
+  arbitrage:
+    enabled: true
+    poll_interval_seconds: 60
+    min_profit_usdc: 0.10
+    max_position: 50.0
+
+  contrarian:
+    enabled: true
+    poll_interval_seconds: 120
+    price_change_threshold: 0.10
+    lookback_minutes: 60
+    max_position: 5.0
+    kelly_fraction: 0.15
+
 markets:
   min_liquidity_usdc: 1000

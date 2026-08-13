@@ -70,6 +70,10 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 	avgPrice := pos.AvgPrice
 	shares := pos.Size
 	outcome := pos.Outcome
+	strategy := pos.Strategy
+	if strategy == "" {
+		strategy = "copy_trading"
+	}
 
 	clobData := b.GetMarketData(marketID)
 	if clobData == nil {
@@ -85,6 +89,7 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 	}
 
 	pnl := (finalPrice - avgPrice) * shares
+	recoveredAmount := shares * finalPrice
 
 	question, slug, err := b.GetMarketMeta(marketID)
 	if err != nil {
@@ -121,6 +126,7 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 		paperTag = " [PAPER]"
 	}
 	slog.Info("Settled",
+		"strategy", strategy,
 		"question", trunc(question, 50),
 		"outcome", outcome,
 		"final", fmt.Sprintf("%.0f", finalPrice),
@@ -132,15 +138,24 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 	if err := b.SettleTrades(tokenID, finalPrice); err != nil {
 		return fmt.Errorf("settle trades: %w", err)
 	}
-	if err := b.DeletePosition(tokenID); err != nil {
-		return fmt.Errorf("delete position: %w", err)
+	if b.IsPaper() {
+		if err := b.DeletePositionStrategy(tokenID, strategy); err != nil {
+			return fmt.Errorf("delete position: %w", err)
+		}
+		if err := b.CreditWallet(strategy, recoveredAmount); err != nil {
+			slog.Error("credit wallet", "strategy", strategy, "error", err)
+		}
+	} else {
+		if err := b.DeletePosition(tokenID); err != nil {
+			return fmt.Errorf("delete position: %w", err)
+		}
 	}
-	if err := updateSnapshot(b, pnl); err != nil {
+	if err := updateSnapshot(b, pnl, strategy); err != nil {
 		return fmt.Errorf("update snapshot: %w", err)
 	}
 
 	if b.GetNotifier() != nil {
-		sendNotification(b.GetNotifier(), question, slug, outcome, finalPrice, avgPrice, shares, pnl, b.IsPaper())
+		sendNotification(b.GetNotifier(), question, slug, outcome, finalPrice, avgPrice, shares, pnl, b.IsPaper(), strategy)
 	}
 
 	return nil
@@ -160,11 +175,11 @@ func tokenPrice(marketData map[string]interface{}, tokenID string) float64 {
 	return -1
 }
 
-func updateSnapshot(b *broker.Broker, pnl float64) error {
+func updateSnapshot(b *broker.Broker, pnl float64, strategy string) error {
 	today := time.Now().UTC().Format("2006-01-02")
 
 	database := b.GetDatabase()
-	snapList, err := database.GetPNLSnapshots(1000)
+	snapList, err := database.GetPNLSnapshotsByStrategy(strategy, 1000)
 	if err != nil {
 		return fmt.Errorf("get pnl snapshots: %w", err)
 	}
@@ -181,13 +196,14 @@ func updateSnapshot(b *broker.Broker, pnl float64) error {
 
 	return database.SavePNLSnapshot(&db.PNLSnapshot{
 		Date:        today,
+		Strategy:    strategy,
 		Realized:    existingRealized + pnl,
 		Unrealized:  0.0,
 		TotalTrades: existingTrades + 1,
 	})
 }
 
-func sendNotification(n interface{ Send(string) }, question, slug, outcome string, finalPrice, avgPrice, shares, pnl float64, paper bool) {
+func sendNotification(n interface{ Send(string) }, question, slug, outcome string, finalPrice, avgPrice, shares, pnl float64, paper bool, strategy string) {
 	result := "✅ WIN"
 	if pnl < 0 {
 		result = "❌ LOSS"
@@ -212,8 +228,8 @@ func sendNotification(n interface{ Send(string) }, question, slug, outcome strin
 	}
 
 	msg := fmt.Sprintf(
-		"%s — Position settled %s\n📊 %s\n-> Held: %s → %s\n-> Entry: %.3f  |  Shares: %.2f  |  P&L: $%.2f%s",
-		mode, result, trunc(question, 80), outcome, wonLost, avgPrice, shares, pnl, urlLine,
+		"%s — Position settled %s\n📊 %s\n📋 Strategy: %s\n-> Held: %s → %s\n-> Entry: %.3f  |  Shares: %.2f  |  P&L: $%.2f%s",
+		mode, result, trunc(question, 80), strategy, outcome, wonLost, avgPrice, shares, pnl, urlLine,
 	)
 	n.Send(msg)
 }

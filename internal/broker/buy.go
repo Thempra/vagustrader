@@ -21,6 +21,7 @@ type BuyRequest struct {
 	TickSize    string
 	NegRisk     bool
 	SourceJSON  string
+	Strategy    string
 }
 
 type TradeResult struct {
@@ -35,6 +36,13 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		req.TickSize = "0.01"
 	}
 	buyPrice := snapToTick(req.Price, req.TickSize)
+
+	if b.paper && req.Strategy != "" {
+		walletBalance, _ := b.GetStrategyBalance(req.Strategy)
+		if walletBalance < req.SizeUSDC {
+			return nil, fmt.Errorf("insufficient paper balance for %s: %.2f < %.2f", req.Strategy, walletBalance, req.SizeUSDC)
+		}
+	}
 
 	var exchangeAddr string
 	if req.NegRisk {
@@ -107,6 +115,7 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		Paper:      b.paper,
 		SourceJSON: req.SourceJSON,
 		Status:     "filled",
+		Strategy:   req.Strategy,
 	}); dbErr != nil {
 		slog.Error("record trade", "error", dbErr)
 	}
@@ -117,9 +126,16 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		Outcome:   req.Outcome,
 		Size:      filledSize / buyPrice,
 		AvgPrice:  buyPrice,
+		Strategy:  req.Strategy,
 		UpdatedTs: time.Now().Unix(),
 	}); dbErr != nil {
 		slog.Error("upsert position", "error", dbErr)
+	}
+
+	if b.paper && req.Strategy != "" {
+		if err := b.database.DeductWallet(req.Strategy, filledSize); err != nil {
+			slog.Error("deduct wallet", "strategy", req.Strategy, "error", err)
+		}
 	}
 
 	sourceJSON := req.SourceJSON

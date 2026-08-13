@@ -16,12 +16,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/vagustrader/vagustrader/internal/cfg"
+	bdb "github.com/vagustrader/vagustrader/internal/db"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -35,6 +35,10 @@ type DashboardData struct {
 	Snapshots         []SnapshotView
 	SnapshotsReversed []SnapshotView
 	CurrentValues     map[string]float64
+
+	ActiveStrategy string
+	Strategies     []StrategyTab
+	Wallet         *bdb.PaperWallet
 
 	PositionCount int
 	TradeCount      int
@@ -63,6 +67,7 @@ type DashboardData struct {
 	HourStatsRows      template.HTML
 	MarketStatsRows    template.HTML
 	PaperLiveStatsRow  template.HTML
+	StrategyStatsRows  template.HTML
 
 	PnLTimelineLabels  template.JS
 	PnLTimelineData    template.JS
@@ -122,6 +127,7 @@ type TradeView struct {
 	Recovered  float64
 	Gain       float64
 	SourceJSON string
+	Strategy   string
 }
 
 type SnapshotView struct {
@@ -132,24 +138,26 @@ type SnapshotView struct {
 	TotalTrades int
 }
 
+type StrategyTab struct {
+	Name        string
+	DisplayName string
+	Balance     float64
+}
+
 var gammaBase = "https://gamma-api.polymarket.com"
 var clobBase = "https://clob.polymarket.com"
 var priceClient = &http.Client{Timeout: 4 * time.Second}
 var metaClient = &http.Client{Timeout: 6 * time.Second}
 
-type cachedDashboard struct {
+type StrategyCache struct {
 	html    []byte
 	csvData []byte
 	data    *DashboardData
-	ts      time.Time
 }
 
 var (
-	cache     atomic.Pointer[cachedDashboard]
-	cacheMu   sync.RWMutex
-	cacheHTML []byte
-	cacheCSV  []byte
-	cacheData *DashboardData
+	cacheMu    sync.RWMutex
+	stratCache = make(map[string]*StrategyCache)
 )
 
 func fetchMetaByToken(tokenID string) (conditionID, question, slug string) {
@@ -325,18 +333,77 @@ func backfillMeta(db *sql.DB) {
 
 var configPath string
 
-func query(dbPath string) *DashboardData {
+type strategyDef struct {
+	Key         string
+	DisplayName string
+}
+
+func enabledStrategies() []strategyDef {
+	ac := cfg.LoadAppConfig(configPath)
+	var out []strategyDef
+	if ac.Strategies.CopyTrading.Enabled {
+		out = append(out, strategyDef{"copy_trading", "Copy Trading"})
+	}
+	if ac.Strategies.UnderHunter.Enabled {
+		out = append(out, strategyDef{"under_hunter", "Under Hunter"})
+	}
+	if ac.Strategies.WhaleConsensus.Enabled {
+		out = append(out, strategyDef{"whale_consensus", "Whale Consensus"})
+	}
+	if ac.Strategies.Arbitrage.Enabled {
+		out = append(out, strategyDef{"arbitrage", "Arbitrage"})
+	}
+	if ac.Strategies.Contrarian.Enabled {
+		out = append(out, strategyDef{"contrarian", "Contrarian"})
+	}
+	if len(out) == 0 {
+		out = []strategyDef{{"copy_trading", "Copy Trading"}}
+	}
+	return out
+}
+
+func resolveStrategy(reqStrategy string) string {
+	defs := enabledStrategies()
+	for _, d := range defs {
+		if d.Key == reqStrategy {
+			return reqStrategy
+		}
+	}
+	if len(defs) > 0 {
+		return defs[0].Key
+	}
+	return "copy_trading"
+}
+
+func buildStrategyTabs(database *bdb.DB) []StrategyTab {
+	defs := enabledStrategies()
+	wallets, _ := database.GetAllWallets()
+	bal := make(map[string]float64)
+	for _, w := range wallets {
+		bal[w.Strategy] = w.Balance
+	}
+	tabs := make([]StrategyTab, 0, len(defs))
+	for _, d := range defs {
+		tabs = append(tabs, StrategyTab{Name: d.Key, DisplayName: d.DisplayName, Balance: bal[d.Key]})
+	}
+	return tabs
+}
+
+func query(dbPath, strategy string) *DashboardData {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Printf("dashboard: open db: %v", err)
-		return &DashboardData{}
+		return &DashboardData{ActiveStrategy: strategy}
 	}
 	defer db.Close()
 
+	database := &bdb.DB{DB: db}
+
 	data := &DashboardData{
-		CurrentValues: make(map[string]float64),
-		Today:         time.Now().UTC().Format("2006-01-02"),
-		Now:           time.Now().UTC().Format("15:04:05") + " UTC",
+		CurrentValues:  make(map[string]float64),
+		ActiveStrategy: strategy,
+		Today:          time.Now().UTC().Format("2006-01-02"),
+		Now:            time.Now().UTC().Format("15:04:05") + " UTC",
 	}
 
 	posRows, err := db.Query(`
@@ -349,8 +416,9 @@ func query(dbPath string) *DashboardData {
 		       ), '')
 		FROM positions p
 		LEFT JOIN market_meta m ON p.market_id = m.condition_id
+		WHERE p.strategy = ?
 		ORDER BY p.updated_ts DESC
-	`)
+	`, strategy)
 	if err == nil {
 		defer posRows.Close()
 		for posRows.Next() {
@@ -383,13 +451,13 @@ func query(dbPath string) *DashboardData {
 	startTs := startOfDay.Unix()
 	endTs := endOfDay.Unix()
 
-	todayRows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, '') FROM trades WHERE ts >= ? AND ts < ?", startTs, endTs)
+	todayRows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? AND ts >= ? AND ts < ?", strategy, startTs, endTs)
 	if err == nil {
 		defer todayRows.Close()
 		for todayRows.Next() {
 			var tv TradeView
 			var paper int
-			if err := todayRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON); err != nil {
+			if err := todayRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Strategy); err != nil {
 				continue
 			}
 			tv.Paper = paper == 1
@@ -407,18 +475,19 @@ func query(dbPath string) *DashboardData {
 		       t.price, t.size_usdc,
 		       COALESCE(t.order_id, ''), t.paper, t.result,
 		       COALESCE(t.source_json, ''),
-		       COALESCE(m.question, ''), COALESCE(m.slug, '')
+		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
+		       COALESCE(t.strategy, '')
 		FROM trades t
 		LEFT JOIN market_meta m ON t.market_id = m.condition_id
-		WHERE t.result IS NOT NULL
+		WHERE t.result IS NOT NULL AND t.strategy = ?
 		ORDER BY t.ts
-	`)
+	`, strategy)
 	if err == nil {
 		defer tradeRows.Close()
 		for tradeRows.Next() {
 			var tv TradeView
 			var paper int
-			if err := tradeRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Question, &tv.Slug); err != nil {
+			if err := tradeRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Question, &tv.Slug, &tv.Strategy); err != nil {
 				continue
 			}
 			tv.Paper = paper == 1
@@ -449,20 +518,17 @@ func query(dbPath string) *DashboardData {
 		data.TradeDisplayed = len(data.RecentTrades)
 	}
 
-	snapRows, err := db.Query("SELECT date, realized, unrealized, total_trades FROM pnl_snapshots ORDER BY date DESC")
-	if err == nil {
-		defer snapRows.Close()
-		for snapRows.Next() {
-			var sv SnapshotView
-			if err := snapRows.Scan(&sv.Date, &sv.Realized, &sv.Unrealized, &sv.TotalTrades); err != nil {
-				continue
-			}
+	if snaps, err := database.GetPNLSnapshotsByStrategy(strategy, 100000); err == nil {
+		for _, s := range snaps {
+			sv := SnapshotView{Date: s.Date, Realized: s.Realized, Unrealized: s.Unrealized, TotalTrades: s.TotalTrades}
 			if len(sv.Date) >= 5 {
 				sv.DateShort = sv.Date[5:]
 			}
 			data.Snapshots = append(data.Snapshots, sv)
-			data.RealizedPnL += sv.Realized
 		}
+	}
+	if rp, err := database.GetRealizedPnLByStrategy(strategy); err == nil {
+		data.RealizedPnL = rp
 	}
 
 	snapDisplay := data.Snapshots
@@ -487,6 +553,9 @@ func query(dbPath string) *DashboardData {
 	data.SnapCells = renderSnapCells(data.SnapshotsReversed)
 
 	computeAndRenderStats(data)
+
+	data.Wallet, _ = database.GetWallet(strategy)
+	data.Strategies = buildStrategyTabs(database)
 
 	data.DBPath = dbPath
 	data.LastUpdated = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
@@ -656,6 +725,10 @@ func renderBalanceRows(trades []TradeView) template.HTML {
 			sourceDataAttr = fmt.Sprintf(` data-sources='%s'`, t.SourceJSON)
 		}
 		sideCell := fmt.Sprintf(`<span class="badge-outcome %s"%s>%s</span>`, badge, sourceDataAttr, displayOutcome)
+		strategyBadge := ""
+		if t.Strategy != "" {
+			strategyBadge = fmt.Sprintf(`<span class="strategy-badge">%s</span>`, t.Strategy)
+		}
 		resultBadge := `<span class="result-open">—</span>`
 		if t.HasResult {
 			if t.Result.Float64 >= 0.99 {
@@ -670,8 +743,8 @@ func renderBalanceRows(trades []TradeView) template.HTML {
 		} else if t.Question == "" {
 			marketLink = `<span class="text-secondary">—</span>`
 		}
-		b.WriteString(fmt.Sprintf(`<tr><td class="time-full">%s</td><td>%s</td><td class="mkt-cell">%s</td><td class="col-side side-source">%s</td><td class="num">%.3f</td><td class="num usd">$%.2f</td>%s%s<td class="result-cell">%s</td></tr>`,
-			t.DateStr, modeBadge, marketLink, sideCell, t.Price, t.SizeUSDC, recovered, gainCell, resultBadge))
+		b.WriteString(fmt.Sprintf(`<tr><td class="time-full">%s</td><td>%s</td><td class="mkt-cell">%s</td><td class="col-side side-source">%s</td><td class="num">%.3f</td><td class="num usd">$%.2f</td>%s%s<td class="result-cell">%s</td><td>%s</td></tr>`,
+			t.DateStr, modeBadge, marketLink, sideCell, t.Price, t.SizeUSDC, recovered, gainCell, resultBadge, strategyBadge))
 	}
 	return template.HTML(b.String())
 }
@@ -739,6 +812,14 @@ type marketStat struct {
 	PnL      float64
 }
 
+type strategyStat struct {
+	Strategy string
+	Trades   int
+	Wins     int
+	PnL      float64
+	Invested float64
+}
+
 func gainFromTrade(t TradeView) float64 {
 	if !t.HasResult {
 		return 0
@@ -766,6 +847,7 @@ func computeAndRenderStats(data *DashboardData) {
 	dowMap := make(map[string]*dowStat)
 	hourMap := make(map[string]*hourStat)
 	marketMap := make(map[string]*marketStat)
+	strategyMap := make(map[string]*strategyStat)
 	var paperTrades, liveTrades, paperWins, liveWins int
 	var paperPnL, livePnL float64
 
@@ -856,6 +938,22 @@ func computeAndRenderStats(data *DashboardData) {
 			mc.Wins++
 		}
 		mc.PnL += gain
+
+		stratKey := t.Strategy
+		if stratKey == "" {
+			stratKey = "copy_trading"
+		}
+		sc := strategyMap[stratKey]
+		if sc == nil {
+			sc = &strategyStat{Strategy: stratKey}
+			strategyMap[stratKey] = sc
+		}
+		sc.Trades++
+		sc.Invested += t.SizeUSDC
+		if gain >= 0 {
+			sc.Wins++
+		}
+		sc.PnL += gain
 
 		if t.SourceJSON != "" && t.SourceJSON != "[]" {
 			var sources []struct {
@@ -1116,6 +1214,36 @@ func computeAndRenderStats(data *DashboardData) {
 	}
 	data.MarketStatsRows = template.HTML(marketSB.String())
 
+	var strategyList []*strategyStat
+	for _, sc := range strategyMap {
+		strategyList = append(strategyList, sc)
+	}
+	sort.Slice(strategyList, func(i, j int) bool {
+		return strategyList[i].PnL > strategyList[j].PnL
+	})
+	var stratSB strings.Builder
+	if len(strategyList) == 0 {
+		stratSB.WriteString(`<tr><td colspan="5" class="empty">No strategy data</td></tr>`)
+	} else {
+		for _, sc := range strategyList {
+			wr := 0.0
+			if sc.Trades > 0 {
+				wr = float64(sc.Wins) / float64(sc.Trades) * 100
+			}
+			pnlCls := "val-pos"
+			if sc.PnL < 0 {
+				pnlCls = "val-neg"
+			}
+			displayName := sc.Strategy
+			if displayName == "" {
+				displayName = "unknown"
+			}
+			stratSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num usd">$%.2f</td><td class="num %s">$%+.2f</td></tr>`,
+				displayName, sc.Trades, wr, sc.Invested, pnlCls, sc.PnL))
+		}
+	}
+	data.StrategyStatsRows = template.HTML(stratSB.String())
+
 	// ── Paper vs Live ──
 	paperWr := 0.0
 	if paperTrades > 0 {
@@ -1334,9 +1462,9 @@ func buildCSV(data *DashboardData) []byte {
 	return buf.Bytes()
 }
 
-func refreshCache(dbPath string, tmpl *template.Template) {
+func refreshCache(dbPath, strategy string, tmpl *template.Template) {
 	start := time.Now()
-	data := query(dbPath)
+	data := query(dbPath, strategy)
 
 	var htmlBuf bytes.Buffer
 	if err := tmpl.Execute(&htmlBuf, data); err != nil {
@@ -1346,35 +1474,41 @@ func refreshCache(dbPath string, tmpl *template.Template) {
 	csvBytes := buildCSV(data)
 
 	cacheMu.Lock()
-	cacheHTML = htmlBuf.Bytes()
-	cacheCSV = csvBytes
-	cacheData = data
+	stratCache[strategy] = &StrategyCache{html: htmlBuf.Bytes(), csvData: csvBytes, data: data}
 	cacheMu.Unlock()
 
-	log.Printf("dashboard: cache refreshed in %v (%d positions, %d trades)", time.Since(start).Round(time.Millisecond), data.PositionCount, data.TradeCount)
+	log.Printf("dashboard: cache refreshed (%s) in %v (%d positions, %d trades)", strategy, time.Since(start).Round(time.Millisecond), data.PositionCount, data.TradeCount)
 }
 
 func backgroundRefresh(dbPath string, tmpl *template.Template) {
-	refreshCache(dbPath, tmpl)
+	for _, s := range enabledStrategies() {
+		refreshCache(dbPath, s.Key, tmpl)
+	}
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err == nil {
 		backfillMeta(db)
 		db.Close()
-		refreshCache(dbPath, tmpl)
+		for _, s := range enabledStrategies() {
+			refreshCache(dbPath, s.Key, tmpl)
+		}
 	}
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		refreshCache(dbPath, tmpl)
+		for _, s := range enabledStrategies() {
+			refreshCache(dbPath, s.Key, tmpl)
+		}
 
 		go func() {
 			db, err := sql.Open("sqlite3", dbPath)
 			if err == nil {
 				backfillMeta(db)
 				db.Close()
-				refreshCache(dbPath, tmpl)
+				for _, s := range enabledStrategies() {
+					refreshCache(dbPath, s.Key, tmpl)
+				}
 			}
 		}()
 	}
@@ -1398,11 +1532,18 @@ func Serve(port int, dbPath string, cfgPath string) {
 			http.NotFound(w, r)
 			return
 		}
+		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
+
 		cacheMu.RLock()
-		html := cacheHTML
+		c := stratCache[strategy]
 		cacheMu.RUnlock()
+
+		var html []byte
+		if c != nil {
+			html = c.html
+		}
 		if len(html) == 0 {
-			data := query(dbPath)
+			data := query(dbPath, strategy)
 			var buf bytes.Buffer
 			if err := tmpl.Execute(&buf, data); err != nil {
 				http.Error(w, "render error", http.StatusInternalServerError)
@@ -1415,11 +1556,18 @@ func Serve(port int, dbPath string, cfgPath string) {
 	})
 
 	http.HandleFunc("/csv", func(w http.ResponseWriter, r *http.Request) {
+		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
+
 		cacheMu.RLock()
-		csv := cacheCSV
+		c := stratCache[strategy]
 		cacheMu.RUnlock()
+
+		var csv []byte
+		if c != nil {
+			csv = c.csvData
+		}
 		if len(csv) == 0 {
-			data := query(dbPath)
+			data := query(dbPath, strategy)
 			csv = buildCSV(data)
 		}
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")

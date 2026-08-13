@@ -74,7 +74,14 @@ func (s *CopyTradingStrategy) tick(b *broker.Broker) error {
 	cfg_ := b.GetConfig().Strategies.CopyTrading
 	risk := b.GetConfig().Risk
 
-	if !b.IsPaper() {
+	if b.IsPaper() {
+		balance, err := b.GetStrategyBalance("copy_trading")
+		if err != nil {
+			slog.Warn("Could not fetch paper balance", "error", err)
+		} else {
+			slog.Info("Paper balance check", "balance", balance)
+		}
+	} else {
 		balance, err := b.GetBalance()
 		if err != nil {
 			slog.Warn("Could not fetch balance", "error", err)
@@ -89,7 +96,7 @@ func (s *CopyTradingStrategy) tick(b *broker.Broker) error {
 		return nil
 	}
 
-	positions, err := b.GetPositions()
+	positions, err := b.GetPositionsByStrategy("copy_trading")
 	if err != nil {
 		return fmt.Errorf("get positions: %w", err)
 	}
@@ -282,6 +289,7 @@ func (s *CopyTradingStrategy) tick(b *broker.Broker) error {
 			TickSize:   tickSize,
 			NegRisk:    negRisk,
 			SourceJSON: sourceJSON,
+			Strategy:   "copy_trading",
 		})
 		if buyErr != nil {
 			if isDeadTokenError(buyErr) {
