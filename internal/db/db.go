@@ -5,9 +5,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// CurrentSchemaVersion tags every new row so post-fix data can be filtered
+// out of the legacy baseline. Bump this on each stabilization phase:
+//   "v1" = post P1 deploy
+//   "v2" = post P2 deploy (kelly/sizing/cache/fill/maxglobal)
+//   "v3" = post P3 deploy (mark-to-market/wallet/stats/chart)
+const CurrentSchemaVersion = "v1"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS market_meta (condition_id TEXT PRIMARY KEY, question TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '');
@@ -36,6 +44,7 @@ type Trade struct {
 	SourceJSON string
 	Status     string
 	Strategy   string
+	SchemaVersion string
 }
 
 type Position struct {
@@ -46,6 +55,7 @@ type Position struct {
 	AvgPrice  float64
 	Strategy  string
 	UpdatedTs int64
+	SchemaVersion string
 }
 
 type MarketMeta struct {
@@ -60,6 +70,7 @@ type PNLSnapshot struct {
 	Realized    float64
 	Unrealized  float64
 	TotalTrades int
+	SchemaVersion string
 }
 
 type PaperWallet struct {
@@ -97,15 +108,36 @@ func Init(path string) (*DB, error) {
 	ldb.Exec("ALTER TABLE trades ADD COLUMN outcome TEXT")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN status TEXT")
 	ldb.Exec("ALTER TABLE trades ADD COLUMN strategy TEXT")
+	// P1.5: schema_version tagging for post-fix data isolation.
+	ldb.Exec("ALTER TABLE trades ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'legacy'")
+	// P3.5: settled_at for settlement idempotency guard.
+	ldb.Exec("ALTER TABLE trades ADD COLUMN settled_at INTEGER")
 	ldb.Exec("UPDATE trades SET status = 'filled' WHERE result IS NOT NULL AND status IS NULL")
 	ldb.Exec("UPDATE trades SET status = 'placed' WHERE result IS NULL AND status IS NULL")
 
 	migratePositionsForStrategy(ldb)
 	migratePNLSnapshotsForStrategy(ldb)
+	migrateSchemaVersion(ldb)
 	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)")
 	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_positions_strategy ON positions(strategy)")
+	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_schema_version ON trades(schema_version)")
 
 	return &DB{ldb}, nil
+}
+
+// migrateSchemaVersion adds the schema_version column to positions and
+// pnl_snapshots (trades is handled inline above because it predates the
+// pragma_table_info guard pattern).
+func migrateSchemaVersion(ldb *sql.DB) {
+	var count int
+	ldb.QueryRow("SELECT COUNT(*) FROM pragma_table_info('positions') WHERE name='schema_version'").Scan(&count)
+	if count == 0 {
+		ldb.Exec("ALTER TABLE positions ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'legacy'")
+	}
+	ldb.QueryRow("SELECT COUNT(*) FROM pragma_table_info('pnl_snapshots') WHERE name='schema_version'").Scan(&count)
+	if count == 0 {
+		ldb.Exec("ALTER TABLE pnl_snapshots ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'legacy'")
+	}
 }
 
 func migratePositionsForStrategy(ldb *sql.DB) {
@@ -159,9 +191,13 @@ func (db *DB) RecordTrade(t *Trade) (int64, error) {
 	if t.Paper {
 		paper = 1
 	}
+	sv := t.SchemaVersion
+	if sv == "" {
+		sv = CurrentSchemaVersion
+	}
 	res, err := db.Exec(
-		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json, status, strategy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON, t.Status, t.Strategy,
+		"INSERT INTO trades (ts, market_id, token_id, side, outcome, price, size_usdc, order_id, paper, result, source_json, status, strategy, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		t.Ts, t.MarketID, t.TokenID, t.Side, t.Outcome, t.Price, t.SizeUSDC, t.OrderID, paper, t.Result, t.SourceJSON, t.Status, t.Strategy, sv,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert trade: %w", err)
@@ -174,20 +210,24 @@ func (db *DB) UpsertPosition(p *Position) error {
 	if strategy == "" {
 		strategy = "copy_trading"
 	}
+	sv := p.SchemaVersion
+	if sv == "" {
+		sv = CurrentSchemaVersion
+	}
 	var existingSize, existingAvg float64
 	err := db.QueryRow("SELECT size, avg_price FROM positions WHERE token_id = ? AND strategy = ?", p.TokenID, strategy).Scan(&existingSize, &existingAvg)
 	if err == sql.ErrNoRows {
 		_, err = db.Exec(
-			"INSERT INTO positions (token_id, market_id, outcome, size, avg_price, strategy, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			p.TokenID, p.MarketID, p.Outcome, p.Size, p.AvgPrice, strategy, p.UpdatedTs,
+			"INSERT INTO positions (token_id, market_id, outcome, size, avg_price, strategy, updated_ts, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			p.TokenID, p.MarketID, p.Outcome, p.Size, p.AvgPrice, strategy, p.UpdatedTs, sv,
 		)
 	} else if err == nil {
 		totalCost := existingSize*existingAvg + p.Size*p.AvgPrice
 		totalSize := existingSize + p.Size
 		newAvg := totalCost / totalSize
 		_, err = db.Exec(
-			"UPDATE positions SET market_id=?, outcome=?, size=?, avg_price=?, updated_ts=? WHERE token_id=? AND strategy=?",
-			p.MarketID, p.Outcome, totalSize, newAvg, p.UpdatedTs, p.TokenID, strategy,
+			"UPDATE positions SET market_id=?, outcome=?, size=?, avg_price=?, updated_ts=?, schema_version=? WHERE token_id=? AND strategy=?",
+			p.MarketID, p.Outcome, totalSize, newAvg, p.UpdatedTs, sv, p.TokenID, strategy,
 		)
 	}
 	if err != nil {
@@ -198,11 +238,26 @@ func (db *DB) UpsertPosition(p *Position) error {
 
 func (db *DB) SettleTrades(tokenID string, finalPrice float64) error {
 	_, err := db.Exec(
-		"UPDATE trades SET result = ? WHERE token_id = ? AND result IS NULL",
-		finalPrice, tokenID,
+		"UPDATE trades SET result = ?, settled_at = ? WHERE token_id = ? AND result IS NULL AND settled_at IS NULL",
+		finalPrice, time.Now().Unix(), tokenID,
 	)
 	if err != nil {
 		return fmt.Errorf("settle trades: %w", err)
+	}
+	return nil
+}
+
+// SettleTradesByStrategy settles only the trades that belong to (tokenID, strategy).
+// This is the per-strategy idempotent version required for multi-strategy isolation:
+// the legacy SettleTrades affected every strategy's rows for the same token, which
+// caused double-counting when two strategies held the same token.
+func (db *DB) SettleTradesByStrategy(tokenID, strategy string, finalPrice float64) error {
+	_, err := db.Exec(
+		"UPDATE trades SET result = ?, settled_at = ? WHERE token_id = ? AND strategy = ? AND result IS NULL AND settled_at IS NULL",
+		finalPrice, time.Now().Unix(), tokenID, strategy,
+	)
+	if err != nil {
+		return fmt.Errorf("settle trades by strategy: %w", err)
 	}
 	return nil
 }
@@ -353,9 +408,13 @@ func (db *DB) SavePNLSnapshot(s *PNLSnapshot) error {
 	if strategy == "" {
 		strategy = "copy_trading"
 	}
+	sv := s.SchemaVersion
+	if sv == "" {
+		sv = CurrentSchemaVersion
+	}
 	_, err := db.Exec(
-		"INSERT INTO pnl_snapshots (date, strategy, realized, unrealized, total_trades) VALUES (?, ?, ?, ?, ?) ON CONFLICT(date, strategy) DO UPDATE SET realized=excluded.realized, unrealized=excluded.unrealized, total_trades=excluded.total_trades",
-		s.Date, strategy, s.Realized, s.Unrealized, s.TotalTrades,
+		"INSERT INTO pnl_snapshots (date, strategy, realized, unrealized, total_trades, schema_version) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date, strategy) DO UPDATE SET realized=excluded.realized, unrealized=excluded.unrealized, total_trades=excluded.total_trades, schema_version=excluded.schema_version",
+		s.Date, strategy, s.Realized, s.Unrealized, s.TotalTrades, sv,
 	)
 	if err != nil {
 		return fmt.Errorf("save pnl snapshot: %w", err)

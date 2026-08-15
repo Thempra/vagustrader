@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vagustrader/vagustrader/internal/cfg"
@@ -20,6 +21,18 @@ import (
 
 const clobREST = "https://clob.polymarket.com"
 
+// marketCacheTTL bounds how long a cached market document is considered fresh.
+// 60s matches Polymarket's typical price-update cadence and prevents the 5
+// concurrent strategy goroutines from hammering the CLOB endpoint on every
+// tick. Also defends against the stale-cache trap where one strategy observes
+// a market as active and another, moments later, misses the close flag.
+const marketCacheTTL = 60 * time.Second
+
+type marketCacheEntry struct {
+	data      map[string]interface{}
+	fetchedAt time.Time
+}
+
 type Broker struct {
 	clob        clob.Client
 	dataAPI     *dataapi.Client
@@ -29,7 +42,8 @@ type Broker struct {
 	paper       bool
 	notifier    *notify.Notifier
 
-	marketCache map[string]map[string]interface{}
+	marketMu    sync.RWMutex
+	marketCache map[string]marketCacheEntry
 }
 
 func New(
@@ -49,7 +63,7 @@ func New(
 		config:      config,
 		paper:       paper,
 		notifier:    notifier,
-		marketCache: make(map[string]map[string]interface{}),
+		marketCache: make(map[string]marketCacheEntry),
 	}
 }
 
@@ -114,17 +128,34 @@ func (b *Broker) CreditWallet(strategy string, amount float64) error {
 	return b.database.CreditWallet(strategy, amount)
 }
 
+// ClearMarketCache is retained for backwards compatibility with strategies
+// that explicitly invalidate the cache at tick boundaries. With TTL-based
+// caching (P1.1) this is effectively a no-op of historical interest; callers
+// no longer need to invoke it.
 func (b *Broker) ClearMarketCache() {
-	b.marketCache = make(map[string]map[string]interface{})
+	b.marketMu.Lock()
+	b.marketCache = make(map[string]marketCacheEntry)
+	b.marketMu.Unlock()
 }
 
 func (b *Broker) GetMarketData(conditionID string) map[string]interface{} {
-	if cached, ok := b.marketCache[conditionID]; ok {
-		return cached
+	// Fast path: read-lock check for a fresh entry.
+	b.marketMu.RLock()
+	if entry, ok := b.marketCache[conditionID]; ok && time.Since(entry.fetchedAt) < marketCacheTTL {
+		b.marketMu.RUnlock()
+		return entry.data
 	}
+	b.marketMu.RUnlock()
+
+	// Slow path: fetch outside the lock so concurrent callers don't serialize
+	// on HTTP I/O. The write below is guarded; last writer wins, which is fine
+	// because the upstream CLOB response is deterministic for a given
+	// conditionID at a given instant.
 	result := fetchClobMarket(conditionID)
 	if result != nil {
-		b.marketCache[conditionID] = result
+		b.marketMu.Lock()
+		b.marketCache[conditionID] = marketCacheEntry{data: result, fetchedAt: time.Now()}
+		b.marketMu.Unlock()
 	}
 	return result
 }
@@ -141,6 +172,13 @@ func (b *Broker) Notify(msg string) {
 
 func (b *Broker) SettleTrades(tokenID string, finalPrice float64) error {
 	return b.database.SettleTrades(tokenID, finalPrice)
+}
+
+// SettleTradesByStrategy settles only trades belonging to (tokenID, strategy).
+// Use this in multi-strategy settlement to avoid double-counting P&L when two
+// strategies hold the same token. See P1.4.
+func (b *Broker) SettleTradesByStrategy(tokenID, strategy string, finalPrice float64) error {
+	return b.database.SettleTradesByStrategy(tokenID, strategy, finalPrice)
 }
 
 func (b *Broker) DeletePosition(tokenID string) error {
