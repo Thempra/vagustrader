@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"text/tabwriter"
@@ -53,6 +54,8 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create copy_trading strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "copy_trading")
 		}
 		if appConfig.Strategies.Settlement.Enabled {
 			s, err := strategy.Create("settlement")
@@ -60,6 +63,8 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create settlement strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "settlement")
 		}
 		if appConfig.Strategies.UnderHunter.Enabled {
 			s, err := strategy.Create("under_hunter")
@@ -67,6 +72,8 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create under_hunter strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "under_hunter")
 		}
 		if appConfig.Strategies.WhaleConsensus.Enabled {
 			s, err := strategy.Create("whale_consensus")
@@ -74,6 +81,8 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create whale_consensus strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "whale_consensus")
 		}
 		if appConfig.Strategies.Arbitrage.Enabled {
 			s, err := strategy.Create("arbitrage")
@@ -81,6 +90,8 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create arbitrage strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "arbitrage")
 		}
 		if appConfig.Strategies.Contrarian.Enabled {
 			s, err := strategy.Create("contrarian")
@@ -88,7 +99,11 @@ var runCmd = &cobra.Command{
 				return fmt.Errorf("create contrarian strategy: %w", err)
 			}
 			strategies = append(strategies, s)
+		} else {
+			slog.Info("Strategy disabled by config", "strategy", "contrarian")
 		}
+
+		slog.Info("Strategies registered", "count", len(strategies))
 
 		return engine.RunWithGracefulShutdown(settings, appConfig, paper, strategies...)
 	},
