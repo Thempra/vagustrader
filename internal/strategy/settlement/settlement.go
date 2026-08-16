@@ -135,8 +135,8 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 		"paper", paperTag,
 	)
 
-	if err := b.SettleTrades(tokenID, finalPrice); err != nil {
-		return fmt.Errorf("settle trades: %w", err)
+	if err := b.SettleTradesByStrategy(tokenID, strategy, finalPrice); err != nil {
+		return fmt.Errorf("settle trades by strategy: %w", err)
 	}
 	if b.IsPaper() {
 		if err := b.DeletePositionStrategy(tokenID, strategy); err != nil {
