@@ -42,9 +42,10 @@ func LoadSettings() Settings {
 }
 
 type RiskConfig struct {
-	MaxPositionUSDC     float64 `yaml:"max_position_usdc"`
-	MaxOpenPositions    int     `yaml:"max_open_positions"`
-	DailyLossLimitUSDC  float64 `yaml:"daily_loss_limit_usdc"`
+	MaxPositionUSDC        float64 `yaml:"max_position_usdc"`
+	MaxOpenPositions       int     `yaml:"max_open_positions"`
+	MaxOpenPositionsGlobal int     `yaml:"max_open_positions_global"`
+	DailyLossLimitUSDC     float64 `yaml:"daily_loss_limit_usdc"`
 }
 
 type SizeTier struct {
@@ -131,9 +132,10 @@ type AppConfig struct {
 func LoadAppConfig(path string) AppConfig {
 	defaults := AppConfig{
 		Risk: RiskConfig{
-			MaxPositionUSDC:    50.0,
-			MaxOpenPositions:   10,
-			DailyLossLimitUSDC: 200.0,
+			MaxPositionUSDC:        50.0,
+			MaxOpenPositions:       10,
+			MaxOpenPositionsGlobal: 100,
+			DailyLossLimitUSDC:     200.0,
 		},
 		Strategies: StrategiesConfig{
 			CopyTrading: CopyTradingConfig{
