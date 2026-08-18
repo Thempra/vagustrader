@@ -438,7 +438,12 @@ func getPositionSize(price float64, tiers []cfg.SizeTier, maxSize float64) float
 			return math.Min(t.SizeUSDC, maxSize)
 		}
 	}
-	return maxSize
+	// P2.2: no tier matched. Previously we defaulted to maxSize, which
+	// silently placed the largest possible bet on prices that fell
+	// outside every configured band. Return 0 (skip) instead and log so
+	// the gap in the tier config is visible.
+	slog.Warn("CopyTrading no size tier matched price, skipping", "price", price)
+	return 0
 }
 
 func min(a, b int) int {

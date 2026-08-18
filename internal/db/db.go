@@ -15,7 +15,7 @@ import (
 //   "v1" = post P1 deploy
 //   "v2" = post P2 deploy (kelly/sizing/cache/fill/maxglobal)
 //   "v3" = post P3 deploy (mark-to-market/wallet/stats/chart)
-const CurrentSchemaVersion = "v1"
+const CurrentSchemaVersion = "v2"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS market_meta (condition_id TEXT PRIMARY KEY, question TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '');
