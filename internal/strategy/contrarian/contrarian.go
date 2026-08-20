@@ -160,7 +160,7 @@ func (s *ContrarianStrategy) tick(b *broker.Broker) error {
 
 				size := kelly.OptimalSize(kelly.EdgeEstimate{
 					WinProb:    winProb,
-					Payout:     oppositePrice,
+					Payout:     1 - oppositePrice,
 					LossAmount: oppositePrice,
 				}, risk.MaxPositionUSDC*10, config.MaxPosition, config.KellyFraction)
 

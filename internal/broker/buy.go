@@ -37,6 +37,20 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 	}
 	buyPrice := snapToTick(req.Price, req.TickSize)
 
+	// P2.5: global hard cap across ALL strategies. This is the last line of
+	// defence so that no single strategy (or a sizing/counting bug inside
+	// one) can blow past the account-wide open-position limit. Per-strategy
+	// limits still apply upstream; this only enforces the aggregate ceiling.
+	if cap := b.config.Risk.MaxOpenPositionsGlobal; cap > 0 {
+		if positions, err := b.database.GetPositions(); err != nil {
+			slog.Warn("Could not count open positions for global cap", "error", err)
+		} else if len(positions) >= cap {
+			slog.Warn("Global max open positions reached, rejecting buy",
+				"open", len(positions), "cap", cap, "strategy", req.Strategy)
+			return nil, fmt.Errorf("global max open positions reached: %d >= %d", len(positions), cap)
+		}
+	}
+
 	if b.paper && req.Strategy != "" {
 		walletBalance, _ := b.GetStrategyBalance(req.Strategy)
 		if walletBalance < req.SizeUSDC {
@@ -79,12 +93,14 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 
 	filledSize := req.SizeUSDC
 	fillStatus := "filled"
+	verified := b.paper // paper fills are simulated, treat as verified
 	if orderID != "" {
 		time.Sleep(2 * time.Second)
 		orderInfo, orderErr := b.clob.GetOrder(orderID)
 		if orderErr != nil {
 			slog.Warn("Could not verify order fill", "orderID", orderID, "error", orderErr)
 		} else if orderInfo != nil {
+			verified = true
 			fillStatus = orderInfo.Status
 			if orderInfo.SizeFilled > 0 && orderInfo.Price > 0 {
 				filledSize = orderInfo.SizeFilled * orderInfo.Price
@@ -94,7 +110,16 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 	}
 
 	if !b.paper {
-		if fillStatus != "FILLED" && fillStatus != "filled" && fillStatus != "MATCHED" && fillStatus != "LIVE" {
+		// P2.4: never silently assume a fill in live mode. If we could not
+		// verify the order, or it is only resting on the book (LIVE), treat
+		// it as a non-fill and surface an error instead of recording a
+		// phantom trade / position.
+		if !verified {
+			slog.Warn("Live order fill unverified, refusing to record", "orderID", orderID, "status", fillStatus)
+			return nil, fmt.Errorf("order fill unverified (orderID=%s)", orderID)
+		}
+		if fillStatus != "FILLED" && fillStatus != "filled" && fillStatus != "MATCHED" {
+			slog.Warn("Live order not filled", "orderID", orderID, "status", fillStatus)
 			return nil, fmt.Errorf("order not filled: %s (orderID=%s)", fillStatus, orderID)
 		}
 	}
