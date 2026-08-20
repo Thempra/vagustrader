@@ -1396,7 +1396,7 @@ func readConfig(path string) template.HTML {
 	var appCfg cfg.AppConfig
 	if err := yaml.Unmarshal(data, &appCfg); err != nil {
 		appCfg = cfg.AppConfig{
-			Risk:       cfg.RiskConfig{MaxPositionUSDC: 50, MaxOpenPositions: 10, DailyLossLimitUSDC: 200},
+			Risk:       cfg.RiskConfig{MaxPositionUSDC: 50, MaxOpenPositions: 10, MaxOpenPositionsGlobal: 100, DailyLossLimitUSDC: 200},
 			Markets:    cfg.MarketsConfig{MinLiquidityUSDC: 5000},
 			Strategies: cfg.StrategiesConfig{CopyTrading: cfg.CopyTradingConfig{Enabled: true, PollIntervalSeconds: 300, MinPnL: 10000, MinVolumeUSD: 10000, PriceGuard: 0.05, MaxCopyPerTrader: 3, MaxDaysToResolution: 0}},
 		}

@@ -167,7 +167,7 @@ func (s *WhaleConsensusStrategy) tick(b *broker.Broker) error {
 		winProb := kelly.EstimateWinProb(buyPrice, "", "", len(sources))
 		size := kelly.OptimalSize(kelly.EdgeEstimate{
 			WinProb:    winProb,
-			Payout:     buyPrice,
+			Payout:     1 - buyPrice,
 			LossAmount: buyPrice,
 		}, risk.MaxPositionUSDC*10, config.MaxPosition, config.KellyFraction)
 

@@ -125,9 +125,15 @@ func (s *UnderHunterStrategy) tick(ctx context.Context, b *broker.Broker) error 
 			}
 
 			winProb := kelly.EstimateWinProb(price, sportPrefix, "under", 0)
+			// P2.1: prediction-market payoff. A winning share pays $1.00
+			// regardless of entry price, so the per-share gain is
+			// (1 - price) and the per-share loss is the entry price.
+			// Previously we passed Payout=price, LossAmount=price which
+			// made Kelly degenerate to even-money (b=1) and under-bet
+			// every longshot.
 			size := kelly.OptimalSize(kelly.EdgeEstimate{
 				WinProb:    winProb,
-				Payout:     price,
+				Payout:     1 - price,
 				LossAmount: price,
 			}, risk.MaxPositionUSDC*10, config.MaxPosition, config.KellyFraction)
 
