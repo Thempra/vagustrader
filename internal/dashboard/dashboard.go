@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -1516,6 +1517,19 @@ func backgroundRefresh(dbPath string, tmpl *template.Template) {
 
 func Serve(port int, dbPath string, cfgPath string) {
 	configPath = cfgPath
+
+	// Diagnóstico: al arrancar el dashboard, registrar qué estrategias
+	// habilita el config que realmente se lee. Si el archivo no se
+	// encuentra, LoadAppConfig devuelve defaults (solo copy_trading en
+	// true) y la barra de tabs mostraría una sola pestaña — este log
+	// hace visible esa discrepancia.
+	defs := enabledStrategies()
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		names = append(names, d.DisplayName)
+	}
+	slog.Info("Dashboard enabled strategies", "config", cfgPath, "count", len(defs), "strategies", strings.Join(names, ", "))
+
 	tmpl := buildTemplate()
 
 	go backgroundRefresh(dbPath, tmpl)
