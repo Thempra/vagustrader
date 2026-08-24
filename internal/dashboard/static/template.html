@@ -37,9 +37,9 @@
 <div class="brand">&#x2B21; VAGUSTRADER</div>
 <div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val blue">{{.PositionCount}} <span style="font-size:11px;color:var(--dim)">/ ${{.TotalCost | printf "%.0f"}}</span></div></div>
 <div class="kpi-sep"></div>
-<div class="kpi"><div class="kpi-label">Total P&amp;L</div><div class="kpi-val {{.TotalPnL | pnlClass}}">${{.TotalPnL | printf "+%.2f"}}</div></div>
-<div class="kpi"><div class="kpi-label">Realized</div><div class="kpi-val {{.RealizedPnL | pnlClass}}">${{.RealizedPnL | printf "+%.2f"}}</div></div>
-<div class="kpi"><div class="kpi-label">Unrealized</div><div class="kpi-val {{.UnrealizedPnL | pnlClass}}">${{.UnrealizedPnL | printf "+%.2f"}}</div></div>
+<div class="kpi"><div class="kpi-label">Total P&amp;L</div><div class="kpi-val {{.TotalPnL | pnlClass}}">${{.TotalPnL | formatPnL}}</div></div>
+<div class="kpi"><div class="kpi-label">Realized</div><div class="kpi-val {{.RealizedPnL | pnlClass}}">${{.RealizedPnL | formatPnL}}</div></div>
+<div class="kpi"><div class="kpi-label">Unrealized</div><div class="kpi-val {{.UnrealizedPnL | pnlClass}}">${{.UnrealizedPnL | formatPnL}}</div></div>
 <div class="kpi-sep"></div>
 <div class="kpi"><div class="kpi-label">Live today</div><div class="kpi-val green">{{.LiveToday}}</div></div>
 <div class="kpi"><div class="kpi-label">Paper today</div><div class="kpi-val yellow">{{.PaperToday}}</div></div>
@@ -106,8 +106,8 @@
       <div class="chart-row">
         <div class="chart-box"><canvas id="chart-timeline"></canvas></div>
         <div class="perf-cards">
-          <div class="perf-card"><div class="perf-label">Avg Win</div><div class="perf-val val-pos">${{.PerfAvgWin | printf "+%.2f"}}</div></div>
-          <div class="perf-card"><div class="perf-label">Avg Loss</div><div class="perf-val val-neg">${{.PerfAvgLoss | printf "+%.2f"}}</div></div>
+          <div class="perf-card"><div class="perf-label">Avg Win</div><div class="perf-val val-pos">${{.PerfAvgWin | formatPnL}}</div></div>
+          <div class="perf-card"><div class="perf-label">Avg Loss</div><div class="perf-val val-neg">${{.PerfAvgLoss | formatPnL}}</div></div>
           <div class="perf-card"><div class="perf-label">Profit Factor</div><div class="perf-val {{if ge .PerfProfitFactor 1.0}}val-pos{{else}}val-neg{{end}}">{{.PerfProfitFactor | printf "%.2f"}}</div></div>
           <div class="perf-card"><div class="perf-label">Streak (W)</div><div class="perf-val val-pos">{{.PerfStreakWins}}</div></div>
           <div class="perf-card"><div class="perf-label">Streak (L)</div><div class="perf-val val-neg">{{.PerfStreakLosses}}</div></div>
