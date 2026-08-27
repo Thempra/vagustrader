@@ -15,7 +15,8 @@ import (
 //   "v1" = post P1 deploy
 //   "v2" = post P2 deploy (kelly/sizing/cache/fill/maxglobal)
 //   "v3" = post P3 deploy (mark-to-market/wallet/stats/chart)
-const CurrentSchemaVersion = "v3"
+//   "v4" = post diagnostics deploy (strategy tick instrumentation)
+const CurrentSchemaVersion = "v4"
 
 const schema = `
 CREATE TABLE IF NOT EXISTS market_meta (condition_id TEXT PRIMARY KEY, question TEXT NOT NULL, slug TEXT NOT NULL DEFAULT '');
@@ -23,6 +24,8 @@ CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTE
 CREATE TABLE IF NOT EXISTS positions (token_id TEXT PRIMARY KEY, market_id TEXT NOT NULL, outcome TEXT NOT NULL, size REAL NOT NULL, avg_price REAL NOT NULL, updated_ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pnl_snapshots (date TEXT PRIMARY KEY, realized REAL NOT NULL, unrealized REAL NOT NULL, total_trades INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS paper_wallets (strategy TEXT PRIMARY KEY, initial_balance REAL NOT NULL DEFAULT 10000.0, spent REAL NOT NULL DEFAULT 0.0, recovered REAL NOT NULL DEFAULT 0.0, updated_ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS strategy_diagnostics (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, strategy TEXT NOT NULL, scanned INTEGER NOT NULL DEFAULT 0, skipped_not_ou INTEGER NOT NULL DEFAULT 0, skipped_price INTEGER NOT NULL DEFAULT 0, skipped_sport INTEGER NOT NULL DEFAULT 0, skipped_held INTEGER NOT NULL DEFAULT 0, skipped_dead INTEGER NOT NULL DEFAULT 0, opened INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_diag_strategy_ts ON strategy_diagnostics(strategy, ts);
 `
 
 type DB struct {
@@ -420,6 +423,53 @@ func (db *DB) SavePNLSnapshot(s *PNLSnapshot) error {
 		return fmt.Errorf("save pnl snapshot: %w", err)
 	}
 	return nil
+}
+
+// Diagnostic captures per-tick scan stats for a strategy so that "dead"
+// strategies (0 trades) can be diagnosed without container log access.
+type Diagnostic struct {
+	Strategy       string
+	Scanned        int
+	SkippedNotOU   int
+	SkippedPrice   int
+	SkippedSport   int
+	SkippedHeld    int
+	SkippedDead    int
+	Opened         int
+	Errors         int
+	Note           string
+}
+
+func (db *DB) RecordDiagnostic(d *Diagnostic) error {
+	_, err := db.Exec(
+		"INSERT INTO strategy_diagnostics (ts, strategy, scanned, skipped_not_ou, skipped_price, skipped_sport, skipped_held, skipped_dead, opened, errors, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		time.Now().Unix(), d.Strategy, d.Scanned, d.SkippedNotOU, d.SkippedPrice, d.SkippedSport, d.SkippedHeld, d.SkippedDead, d.Opened, d.Errors, d.Note,
+	)
+	if err != nil {
+		return fmt.Errorf("record diagnostic: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) GetLatestDiagnostics(strategy string, limit int) ([]Diagnostic, error) {
+	rows, err := db.Query(
+		"SELECT ts, strategy, scanned, skipped_not_ou, skipped_price, skipped_sport, skipped_held, skipped_dead, opened, errors, note FROM strategy_diagnostics WHERE strategy=? ORDER BY ts DESC LIMIT ?",
+		strategy, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query diagnostics: %w", err)
+	}
+	defer rows.Close()
+	var out []Diagnostic
+	for rows.Next() {
+		var d Diagnostic
+		var ts int64
+		if err := rows.Scan(&ts, &d.Strategy, &d.Scanned, &d.SkippedNotOU, &d.SkippedPrice, &d.SkippedSport, &d.SkippedHeld, &d.SkippedDead, &d.Opened, &d.Errors, &d.Note); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }
 
 func (db *DB) GetPNLSnapshots(limit int) ([]PNLSnapshot, error) {
