@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vagustrader/vagustrader/internal/broker"
+	"github.com/vagustrader/vagustrader/internal/db"
 )
 
 type ArbitrageStrategy struct{}
@@ -65,7 +66,7 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 		held[p.TokenID] = struct{}{}
 	}
 
-	var scanned, arbFound int
+	var scanned, arbFound, underBook, profitFiltered int
 
 	for _, m := range markets {
 		if len(m.OutcomePrices) < 2 || len(m.TokenIDs) < 2 {
@@ -82,6 +83,7 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 			continue
 		}
 
+		underBook++
 		discount := 1.0 - totalPrice
 		if discount <= 0 {
 			continue
@@ -100,6 +102,7 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 
 		estimatedProfit := discount * config.MaxPosition
 		if estimatedProfit < config.MinProfitUSDC {
+			profitFiltered++
 			continue
 		}
 
@@ -191,6 +194,15 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 		}
 	}
 
-	slog.Info("Arbitrage tick", "scanned", scanned, "arb_found", arbFound)
+	slog.Info("Arbitrage tick", "scanned", scanned, "under_book", underBook, "profit_filtered", profitFiltered, "arb_found", arbFound)
+	if database := b.GetDatabase(); database != nil {
+		_ = database.RecordDiagnostic(&db.Diagnostic{
+			Strategy:     "arbitrage",
+			Scanned:      scanned,
+			SkippedPrice: underBook,
+			SkippedDead:  profitFiltered,
+			Opened:       arbFound,
+		})
+	}
 	return nil
 }

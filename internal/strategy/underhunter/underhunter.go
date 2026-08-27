@@ -10,6 +10,7 @@ import (
 
 	"github.com/vagustrader/vagustrader/internal/broker"
 	"github.com/vagustrader/vagustrader/internal/cfg"
+	"github.com/vagustrader/vagustrader/internal/db"
 	"github.com/vagustrader/vagustrader/internal/strategy/kelly"
 )
 
@@ -218,6 +219,18 @@ func (s *UnderHunterStrategy) tick(ctx context.Context, b *broker.Broker) error 
 		"dead", skippedDead,
 		"opened", opened,
 	)
+	if database := b.GetDatabase(); database != nil {
+		_ = database.RecordDiagnostic(&db.Diagnostic{
+			Strategy:     "under_hunter",
+			Scanned:      scanned,
+			SkippedNotOU: skippedNotOU,
+			SkippedPrice: skippedPrice,
+			SkippedSport: skippedSport,
+			SkippedHeld:  skippedHeld,
+			SkippedDead:  skippedDead,
+			Opened:       opened,
+		})
+	}
 	return nil
 }
 

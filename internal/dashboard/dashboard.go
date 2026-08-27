@@ -1589,6 +1589,27 @@ func Serve(port int, dbPath string, cfgPath string) {
 		w.Write(csv)
 	})
 
+	http.HandleFunc("/api/diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		strategy := r.URL.Query().Get("strategy")
+		if strategy == "" {
+			strategy = "under_hunter"
+		}
+		sqliteDB, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer sqliteDB.Close()
+		database := &bdb.DB{DB: sqliteDB}
+		diags, err := database.GetLatestDiagnostics(strategy, 20)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(diags)
+	})
+
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 	log.Printf("Dashboard → http://localhost:%d", port)
 	if err := http.ListenAndServe(addr, nil); err != nil {
