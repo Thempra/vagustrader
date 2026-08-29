@@ -68,6 +68,11 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 
 	var scanned, arbFound, underBook, profitFiltered int
 
+	// tolerance: Polymarket's book rarely dips below 1.00 but does oscillate.
+	// We accept any market whose outcome-sum is within tolerance of 1.00 —
+	// capturing transient inefficiencies *and* the rare pure-arb case.
+	const tolerance = 0.02
+
 	for _, m := range markets {
 		if len(m.OutcomePrices) < 2 || len(m.TokenIDs) < 2 {
 			continue
@@ -78,14 +83,14 @@ func (s *ArbitrageStrategy) tick(b *broker.Broker) error {
 			totalPrice += p
 		}
 
-		if totalPrice >= 1.0 {
+		if totalPrice > 1.0+tolerance {
 			scanned++
 			continue
 		}
 
 		underBook++
 		discount := 1.0 - totalPrice
-		if discount <= 0 {
+		if discount <= -tolerance {
 			continue
 		}
 

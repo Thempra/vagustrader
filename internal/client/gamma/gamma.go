@@ -43,7 +43,7 @@ func (c *Client) GetMarkets(limit, offset int, active, fetchAll bool) ([]Market,
 	}
 
 	var all []Market
-	pageSize := 500
+	pageSize := 100
 	cur := offset
 	for {
 		page, err := c.fetchPage(pageSize, cur, active)
@@ -129,7 +129,7 @@ func (c *Client) FetchMetaByToken(tokenID string) (conditionID, question, slug s
 }
 
 func (c *Client) fetchPage(limit, offset int, active bool) ([]Market, error) {
-	u := fmt.Sprintf("%s/markets?limit=%d&offset=%d&active=%s",
+	u := fmt.Sprintf("%s/markets?limit=%d&offset=%d&active=%s&order=volume&ascending=false",
 		c.baseURL, limit, offset, strconv.FormatBool(active))
 	resp, err := c.http.Get(u)
 	if err != nil {
