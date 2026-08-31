@@ -37,7 +37,7 @@ strategies:
   under_hunter:
     enabled: true
     poll_interval_seconds: 120
-    min_price: 0.30
+    min_price: 0.48
     max_price: 0.55
     max_position: 10.0
     kelly_fraction: 0.25
@@ -54,7 +54,7 @@ strategies:
   arbitrage:
     enabled: true
     poll_interval_seconds: 60
-    min_profit_usdc: 0.10
+    min_profit_usdc: 0.01
     max_position: 50.0
 
   contrarian:
