@@ -7,6 +7,8 @@ import (
 	"github.com/vagustrader/vagustrader/internal/strategy/arbitrage"
 	"github.com/vagustrader/vagustrader/internal/strategy/contrarian"
 	"github.com/vagustrader/vagustrader/internal/strategy/copytrading"
+	"github.com/vagustrader/vagustrader/internal/strategy/momentumrider"
+	"github.com/vagustrader/vagustrader/internal/strategy/resolutionsniper"
 	"github.com/vagustrader/vagustrader/internal/strategy/settlement"
 	"github.com/vagustrader/vagustrader/internal/strategy/underhunter"
 	"github.com/vagustrader/vagustrader/internal/strategy/whaleconsensus"
@@ -32,6 +34,12 @@ var registry = map[string]Factory{
 	},
 	"contrarian": func() Strategy {
 		return contrarian.New()
+	},
+	"resolution_sniper": func() Strategy {
+		return resolutionsniper.New()
+	},
+	"momentum_rider": func() Strategy {
+		return momentumrider.New()
 	},
 }
 

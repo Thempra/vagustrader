@@ -65,5 +65,24 @@ strategies:
     max_position: 5.0
     kelly_fraction: 0.15
 
+  resolution_sniper:
+    enabled: true
+    poll_interval_seconds: 300
+    min_price: 0.90
+    max_price: 0.97
+    max_days_to_end: 7
+    min_volume: 5000
+    max_position: 20.0
+    kelly_fraction: 0.10
+
+  momentum_rider:
+    enabled: true
+    poll_interval_seconds: 60
+    price_change_threshold: 0.05
+    volume_spike_multiplier: 2.0
+    lookback_minutes: 30
+    max_position: 5.0
+    kelly_fraction: 0.15
+
 markets:
   min_liquidity_usdc: 1000
