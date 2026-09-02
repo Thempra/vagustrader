@@ -93,15 +93,33 @@ var runCmd = &cobra.Command{
 		} else {
 			slog.Info("Strategy disabled by config", "strategy", "arbitrage")
 		}
-		if appConfig.Strategies.Contrarian.Enabled {
-			s, err := strategy.Create("contrarian")
-			if err != nil {
-				return fmt.Errorf("create contrarian strategy: %w", err)
-			}
-			strategies = append(strategies, s)
-		} else {
-			slog.Info("Strategy disabled by config", "strategy", "contrarian")
+	if appConfig.Strategies.Contrarian.Enabled {
+		s, err := strategy.Create("contrarian")
+		if err != nil {
+			return fmt.Errorf("create contrarian strategy: %w", err)
 		}
+		strategies = append(strategies, s)
+	} else {
+		slog.Info("Strategy disabled by config", "strategy", "contrarian")
+	}
+	if appConfig.Strategies.ResolutionSniper.Enabled {
+		s, err := strategy.Create("resolution_sniper")
+		if err != nil {
+			return fmt.Errorf("create resolution_sniper strategy: %w", err)
+		}
+		strategies = append(strategies, s)
+	} else {
+		slog.Info("Strategy disabled by config", "strategy", "resolution_sniper")
+	}
+	if appConfig.Strategies.MomentumRider.Enabled {
+		s, err := strategy.Create("momentum_rider")
+		if err != nil {
+			return fmt.Errorf("create momentum_rider strategy: %w", err)
+		}
+		strategies = append(strategies, s)
+	} else {
+		slog.Info("Strategy disabled by config", "strategy", "momentum_rider")
+	}
 
 		slog.Info("Strategies registered", "count", len(strategies))
 

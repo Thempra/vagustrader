@@ -357,6 +357,12 @@ func enabledStrategies() []strategyDef {
 	if ac.Strategies.Contrarian.Enabled {
 		out = append(out, strategyDef{"contrarian", "Contrarian"})
 	}
+	if ac.Strategies.ResolutionSniper.Enabled {
+		out = append(out, strategyDef{"resolution_sniper", "Resolution Sniper"})
+	}
+	if ac.Strategies.MomentumRider.Enabled {
+		out = append(out, strategyDef{"momentum_rider", "Momentum Rider"})
+	}
 	if len(out) == 0 {
 		out = []strategyDef{{"copy_trading", "Copy Trading"}}
 	}
