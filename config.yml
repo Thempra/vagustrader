@@ -84,5 +84,23 @@ strategies:
     max_position: 5.0
     kelly_fraction: 0.15
 
+  deep_value:
+    enabled: true
+    poll_interval_seconds: 120
+    max_price: 0.15
+    min_volume: 10000
+    max_position: 8.0
+    kelly_fraction: 0.20
+
+  volume_surge:
+    enabled: true
+    poll_interval_seconds: 120
+    surge_multiplier: 3.0
+    min_baseline_volume: 5000
+    min_price_move: 0.03
+    lookback_minutes: 60
+    max_position: 6.0
+    kelly_fraction: 0.15
+
 markets:
   min_liquidity_usdc: 1000

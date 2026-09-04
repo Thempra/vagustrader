@@ -79,6 +79,8 @@ type StrategiesConfig struct {
 	Contrarian       ContrarianConfig       `yaml:"contrarian"`
 	ResolutionSniper ResolutionSniperConfig `yaml:"resolution_sniper"`
 	MomentumRider    MomentumRiderConfig    `yaml:"momentum_rider"`
+	DeepValue        DeepValueConfig        `yaml:"deep_value"`
+	VolumeSurge      VolumeSurgeConfig      `yaml:"volume_surge"`
 }
 
 type SettlementConfig struct {
@@ -133,13 +135,33 @@ type ResolutionSniperConfig struct {
 }
 
 type MomentumRiderConfig struct {
+	Enabled               bool    `yaml:"enabled"`
+	PollIntervalSeconds   int     `yaml:"poll_interval_seconds"`
+	PriceChangeThreshold  float64 `yaml:"price_change_threshold"`
+	VolumeSpikeMultiplier float64 `yaml:"volume_spike_multiplier"`
+	LookbackMinutes       int     `yaml:"lookback_minutes"`
+	MaxPosition           float64 `yaml:"max_position"`
+	KellyFraction         float64 `yaml:"kelly_fraction"`
+}
+
+type DeepValueConfig struct {
 	Enabled             bool    `yaml:"enabled"`
 	PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
-	PriceChangeThreshold float64 `yaml:"price_change_threshold"`
-	VolumeSpikeMultiplier float64 `yaml:"volume_spike_multiplier"`
-	LookbackMinutes     int     `yaml:"lookback_minutes"`
+	MaxPrice            float64 `yaml:"max_price"`
+	MinVolume           float64 `yaml:"min_volume"`
 	MaxPosition         float64 `yaml:"max_position"`
 	KellyFraction       float64 `yaml:"kelly_fraction"`
+}
+
+type VolumeSurgeConfig struct {
+	Enabled              bool    `yaml:"enabled"`
+	PollIntervalSeconds  int     `yaml:"poll_interval_seconds"`
+	SurgeMultiplier      float64 `yaml:"surge_multiplier"`
+	MinBaselineVolume    float64 `yaml:"min_baseline_volume"`
+	MinPriceMove         float64 `yaml:"min_price_move"`
+	LookbackMinutes      int     `yaml:"lookback_minutes"`
+	MaxPosition          float64 `yaml:"max_position"`
+	KellyFraction        float64 `yaml:"kelly_fraction"`
 }
 
 type MarketsConfig struct {
@@ -225,6 +247,24 @@ func LoadAppConfig(path string) AppConfig {
 			LookbackMinutes:       30,
 			MaxPosition:           5.0,
 			KellyFraction:         0.15,
+		},
+		DeepValue: DeepValueConfig{
+			Enabled:             false,
+			PollIntervalSeconds: 120,
+			MaxPrice:            0.15,
+			MinVolume:           10000,
+			MaxPosition:         8.0,
+			KellyFraction:       0.20,
+		},
+		VolumeSurge: VolumeSurgeConfig{
+			Enabled:             false,
+			PollIntervalSeconds: 120,
+			SurgeMultiplier:     3.0,
+			MinBaselineVolume:   5000,
+			MinPriceMove:        0.03,
+			LookbackMinutes:     60,
+			MaxPosition:         6.0,
+			KellyFraction:       0.15,
 		},
 		},
 		Markets: MarketsConfig{

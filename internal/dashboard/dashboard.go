@@ -363,6 +363,12 @@ func enabledStrategies() []strategyDef {
 	if ac.Strategies.MomentumRider.Enabled {
 		out = append(out, strategyDef{"momentum_rider", "Momentum Rider"})
 	}
+	if ac.Strategies.DeepValue.Enabled {
+		out = append(out, strategyDef{"deep_value", "Deep Value"})
+	}
+	if ac.Strategies.VolumeSurge.Enabled {
+		out = append(out, strategyDef{"volume_surge", "Volume Surge"})
+	}
 	if len(out) == 0 {
 		out = []strategyDef{{"copy_trading", "Copy Trading"}}
 	}

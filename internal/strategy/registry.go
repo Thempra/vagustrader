@@ -7,10 +7,12 @@ import (
 	"github.com/vagustrader/vagustrader/internal/strategy/arbitrage"
 	"github.com/vagustrader/vagustrader/internal/strategy/contrarian"
 	"github.com/vagustrader/vagustrader/internal/strategy/copytrading"
+	"github.com/vagustrader/vagustrader/internal/strategy/deepvalue"
 	"github.com/vagustrader/vagustrader/internal/strategy/momentumrider"
 	"github.com/vagustrader/vagustrader/internal/strategy/resolutionsniper"
 	"github.com/vagustrader/vagustrader/internal/strategy/settlement"
 	"github.com/vagustrader/vagustrader/internal/strategy/underhunter"
+	"github.com/vagustrader/vagustrader/internal/strategy/volumesurge"
 	"github.com/vagustrader/vagustrader/internal/strategy/whaleconsensus"
 )
 
@@ -40,6 +42,12 @@ var registry = map[string]Factory{
 	},
 	"momentum_rider": func() Strategy {
 		return momentumrider.New()
+	},
+	"deep_value": func() Strategy {
+		return deepvalue.New()
+	},
+	"volume_surge": func() Strategy {
+		return volumesurge.New()
 	},
 }
 

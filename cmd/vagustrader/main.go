@@ -120,6 +120,24 @@ var runCmd = &cobra.Command{
 	} else {
 		slog.Info("Strategy disabled by config", "strategy", "momentum_rider")
 	}
+	if appConfig.Strategies.DeepValue.Enabled {
+		s, err := strategy.Create("deep_value")
+		if err != nil {
+			return fmt.Errorf("create deep_value strategy: %w", err)
+		}
+		strategies = append(strategies, s)
+	} else {
+		slog.Info("Strategy disabled by config", "strategy", "deep_value")
+	}
+	if appConfig.Strategies.VolumeSurge.Enabled {
+		s, err := strategy.Create("volume_surge")
+		if err != nil {
+			return fmt.Errorf("create volume_surge strategy: %w", err)
+		}
+		strategies = append(strategies, s)
+	} else {
+		slog.Info("Strategy disabled by config", "strategy", "volume_surge")
+	}
 
 		slog.Info("Strategies registered", "count", len(strategies))
 
