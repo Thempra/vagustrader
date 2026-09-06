@@ -10,6 +10,7 @@ FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
 COPY --from=build /app/vagustrader /usr/local/bin/
 COPY config.yml /app/config.yml
+COPY config.live.yml /app/config.live.yml
 WORKDIR /app
 RUN mkdir -p data logs
 CMD ["vagustrader", "run", "--paper"]
