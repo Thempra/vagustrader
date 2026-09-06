@@ -1,0 +1,39 @@
+# Live production config - FORCED to a single strategy: contrarian
+# Only 'contrarian' (trading) + 'settlement' (housekeeping) are enabled.
+# The engine enforces: live mode allows exactly 1 trading strategy.
+risk:
+  max_position_usdc: 50.0
+  max_open_positions: 10
+  max_open_positions_global: 20
+  daily_loss_limit_usdc: 200.0
+
+strategies:
+  copy_trading:
+    enabled: false
+  settlement:
+    enabled: true
+    interval_seconds: 300
+  under_hunter:
+    enabled: false
+  whale_consensus:
+    enabled: false
+  arbitrage:
+    enabled: false
+  contrarian:
+    enabled: true
+    poll_interval_seconds: 120
+    price_change_threshold: 0.10
+    lookback_minutes: 60
+    max_position: 50.0
+    kelly_fraction: 0.15
+  resolution_sniper:
+    enabled: false
+  momentum_rider:
+    enabled: false
+  deep_value:
+    enabled: false
+  volume_surge:
+    enabled: false
+
+markets:
+  min_liquidity_usdc: 1000
