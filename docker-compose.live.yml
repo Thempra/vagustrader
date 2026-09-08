@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    command: vagustrader run --config /app/config.live.yml
+    env_file: .env
+    volumes:
+      - data:/app/data
+      - logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard:
+    build: .
+    command: vagustrader dashboard --config /app/config.live.yml --db data/vagustrader.db
+    volumes:
+      - data:/app/data
+    ports:
+      - "18081:8080"
+    restart: unless-stopped
+
+volumes:
+  data:
+  logs:
