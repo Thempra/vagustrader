@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -96,6 +97,17 @@ func (e *Engine) Start(ctx context.Context) error {
 	slog.Info("Starting engine", "strategies", names)
 
 	g, gctx := errgroup.WithContext(ctx)
+
+	if !e.paper {
+		// Live mode: keep the wallet rows in sync with the real CLOB/on-chain
+		// balance so the dashboard shows the actual Polymarket wallet funds
+		// rather than the paper default. Read-only CLOB calls; failures are
+		// logged and do not stop the engine.
+		g.Go(func() error {
+			return e.syncLiveBalances(gctx, brk, database)
+		})
+	}
+
 	for _, s := range e.strategies {
 		s := s
 		g.Go(func() error {
@@ -158,4 +170,41 @@ func RunWithGracefulShutdown(settings cfg.Settings, config cfg.AppConfig, paper 
 		engine.Register(s)
 	}
 	return engine.Start(ctx)
+}
+
+// syncLiveBalances runs for the whole lifetime of a live engine. It periodically
+// reads the real CLOB balance (the available USDC collateral in the Polymarket
+// wallet) and writes it into the paper_wallets rows so the dashboard reflects
+// the real funds. On error it logs and continues with the last known value; the
+// ticker stops when the parent context is cancelled.
+func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, database *db.DB) error {
+	const interval = 60 * time.Second
+
+	syncOnce := func() {
+		balance, err := brk.GetBalance()
+		if err != nil {
+			slog.Warn("live balance sync failed", "error", err)
+			return
+		}
+		for _, s := range e.strategies {
+			if err := database.SyncRealBalance(s.Name(), balance); err != nil {
+				slog.Warn("live balance sync write failed", "strategy", s.Name(), "error", err)
+			}
+		}
+		slog.Info("Live balance synced", "balance", balance, "strategies", len(e.strategies))
+	}
+
+	// Sync immediately at startup so the dashboard is correct right away.
+	syncOnce()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
 }

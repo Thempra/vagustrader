@@ -544,6 +544,25 @@ func (db *DB) InitPaperWallet(strategy string, initial float64) error {
 	return nil
 }
 
+// SyncRealBalance (re)sets the wallet row to a real on-chain/CLOB balance. Live
+// mode only: initial_balance mirrors the real USDC the wallet currently holds,
+// and spent/recovered are reset to 0 so that Balance (initial - spent +
+// recovered) always equals the last real balance the bot observed. This is what
+// lets the dashboard show the actual Polymarket wallet funds instead of the
+// paper default of $10000. Returns an error if the wallet could not be created
+// or updated.
+func (db *DB) SyncRealBalance(strategy string, realBalance float64) error {
+	_, err := db.Exec(
+		"INSERT INTO paper_wallets (strategy, initial_balance, spent, recovered, updated_ts) VALUES (?, ?, 0, 0, ?) "+
+			"ON CONFLICT(strategy) DO UPDATE SET initial_balance=excluded.initial_balance, spent=0, recovered=0, updated_ts=excluded.updated_ts",
+		strategy, realBalance, 0,
+	)
+	if err != nil {
+		return fmt.Errorf("sync real balance: %w", err)
+	}
+	return nil
+}
+
 func (db *DB) DeductWallet(strategy string, amount float64) error {
 	_, err := db.Exec(
 		"UPDATE paper_wallets SET spent = spent + ?, updated_ts = ? WHERE strategy = ?",
