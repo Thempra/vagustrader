@@ -181,7 +181,27 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 	const interval = 60 * time.Second
 
 	syncOnce := func() {
-		balance, err := brk.GetBalance()
+		var balance float64
+		var err error
+		// The real trading collateral lives in the proxy / deposit wallet, not
+		// the signer EOA. The CLOB /balance-allowance for the POLY_1271 account
+		// requires a 1271-bound API key that the current stored creds do not
+		// have, so for live+proxy setups we read the wallet's open-position
+		// portfolio value from the public Polymarket data API instead. This is
+		// read-only and requires no credentials.
+		if e.settings.ClobDepositWallet != "" {
+			balance, err = brk.GetDataAPI().PortfolioValue(e.settings.ClobDepositWallet)
+			if err == nil {
+				slog.Info("Live portfolio value",
+					"wallet", e.settings.ClobDepositWallet,
+					"balance", balance)
+			} else {
+				slog.Warn("live portfolio read failed, falling back to CLOB balance", "error", err)
+				balance, err = brk.GetBalance()
+			}
+		} else {
+			balance, err = brk.GetBalance()
+		}
 		if err != nil {
 			slog.Warn("live balance sync failed", "error", err)
 			return
