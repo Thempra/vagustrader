@@ -91,6 +91,56 @@ func (c *Client) GetTopTraders(minPnL float64, limit int) ([]LeaderboardEntry, e
 	return filtered, nil
 }
 
+// PortfolioValue returns the sum of the current value (USDC) of all open
+// positions held by a wallet, read from the public Polymarket data API.
+// Polymarket holds trading collateral in a separate proxy wallet (the
+// deposit/CIP wallet, which owns the positions), so this is the number the
+// dashboard should show as the real wallet balance. It is auth-free and
+// read-only. Pages through /positions with an offset up to a sane cap.
+func (c *Client) PortfolioValue(userAddress string) (float64, error) {
+	const pageSize = 500
+	const maxPages = 40 // 20k positions cap for safety
+	var total float64
+	for page := 0; page < maxPages; page++ {
+		u, err := url.Parse(c.baseURL + "/positions")
+		if err != nil {
+			return 0, err
+		}
+		q := u.Query()
+		q.Set("user", userAddress)
+		q.Set("sizeThreshold", "0")
+		q.Set("limit", strconv.Itoa(pageSize))
+		q.Set("offset", strconv.Itoa(page*pageSize))
+		u.RawQuery = q.Encode()
+
+		resp, err := c.client.Get(u.String())
+		if err != nil {
+			return 0, err
+		}
+		var raw []map[string]interface{}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&raw)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return 0, decodeErr
+		}
+		if resp.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("portfolio request failed: %d", resp.StatusCode)
+		}
+		if len(raw) == 0 {
+			break
+		}
+		for _, d := range raw {
+			total += floatVal(d, "currentValue")
+		}
+		if len(raw) < pageSize {
+			break
+		}
+		// Be gentle with the public API to avoid 403 rate limits.
+		time.Sleep(150 * time.Millisecond)
+	}
+	return total, nil
+}
+
 func (c *Client) GetPositions(userAddress string) ([]Position, error) {
 	u, err := url.Parse(c.baseURL + "/positions")
 	if err != nil {
