@@ -21,6 +21,11 @@ type Settings struct {
 	ChainID             int
 	TelegramBotToken    string
 	TelegramChannelID   string
+
+	// PaperBankroll is the starting virtual balance given to each paper
+	// strategy wallet. Defaults to the size of the real trading account so
+	// paper results reflect reality instead of an unrealistic $10k cushion.
+	PaperBankroll float64
 }
 
 func LoadSettings() Settings {
@@ -38,6 +43,7 @@ func LoadSettings() Settings {
 		ChainID:           envInt("CHAIN_ID", 137),
 		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChannelID: os.Getenv("TELEGRAM_CHANNEL_ID"),
+		PaperBankroll:    envFloatOr("PAPER_BANKROLL", 127.0),
 	}
 }
 
@@ -303,4 +309,16 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func envFloatOr(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
