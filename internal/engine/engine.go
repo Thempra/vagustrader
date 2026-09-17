@@ -28,6 +28,17 @@ type Engine struct {
 	strategies []strategy.Strategy
 }
 
+// paperBankroll returns the starting virtual balance for each paper strategy
+// wallet. Defaults to the real account size (127 USDC) when PAPER_BANKROLL is
+// unset, so paper results reflect the live account instead of an unrealistic
+// $10k cushion.
+func (e *Engine) paperBankroll() float64 {
+	if e.settings.PaperBankroll > 0 {
+		return e.settings.PaperBankroll
+	}
+	return 127.0
+}
+
 func New(settings cfg.Settings, config cfg.AppConfig, paper bool) *Engine {
 	return &Engine{settings: settings, config: config, paper: paper}
 }
@@ -71,7 +82,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	if e.paper {
 		for _, s := range e.strategies {
 			if s.Name() != "settlement" {
-				database.InitPaperWallet(s.Name(), 10000.0)
+				database.InitPaperWallet(s.Name(), e.paperBankroll())
 				w, _ := database.GetWallet(s.Name())
 				slog.Info("Paper wallet initialized", "strategy", s.Name(), "balance", w.Balance)
 			}
