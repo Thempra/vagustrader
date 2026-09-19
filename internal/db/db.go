@@ -534,12 +534,29 @@ func (db *DB) GetRealizedPnLByStrategy(strategy string) (float64, error) {
 }
 
 func (db *DB) InitPaperWallet(strategy string, initial float64) error {
+	// Insert the wallet if it does not exist yet.
 	_, err := db.Exec(
 		"INSERT OR IGNORE INTO paper_wallets (strategy, initial_balance, spent, recovered, updated_ts) VALUES (?, ?, 0, 0, ?)",
 		strategy, initial, 0,
 	)
 	if err != nil {
 		return fmt.Errorf("init paper wallet: %w", err)
+	}
+	// If the account is configured to simulate a real-sized bankroll, reconcile
+	// existing (previously inflated) paper wallets down to it. This keeps paper
+	// results honest instead of letting a stale $10k+ cushion persist in the DB.
+	var stored float64
+	if err := db.QueryRow("SELECT initial_balance FROM paper_wallets WHERE strategy = ?", strategy).Scan(&stored); err != nil {
+		return fmt.Errorf("read paper wallet: %w", err)
+	}
+	if stored != initial {
+		_, err = db.Exec(
+			"UPDATE paper_wallets SET initial_balance = ?, spent = 0, recovered = 0, updated_ts = ? WHERE strategy = ?",
+			initial, 0, strategy,
+		)
+		if err != nil {
+			return fmt.Errorf("reconcile paper wallet: %w", err)
+		}
 	}
 	return nil
 }
