@@ -125,6 +125,12 @@ func Init(path string) (*DB, error) {
 	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)")
 	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_positions_strategy ON positions(strategy)")
 	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_schema_version ON trades(schema_version)")
+	// Dashboard perf: the positions query runs a correlated subquery
+	// (latest source_json per token_id ORDER BY ts DESC LIMIT 1) per open
+	// position. Without this index SQLite SCANs all ~36k trades for every
+	// position (2131 open contrarian positions => minutes of CPU per
+	// refresh). This composite index turns each probe into a seek.
+	ldb.Exec("CREATE INDEX IF NOT EXISTS idx_trades_token_ts ON trades(token_id, ts)")
 
 	return &DB{ldb}, nil
 }
