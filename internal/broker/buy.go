@@ -65,6 +65,10 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		exchangeAddr = clob.ExchangeV2
 	}
 
+	// submittedAt must be captured BEFORE the POST: the data-api fill match
+	// is timestamped server-side at match time, and the POST itself can take
+	// seconds, so stamping after would miss early matches.
+	submittedAt := time.Now().Unix() - 2
 	orderResult, err := b.clob.PlaceLimitOrder(clob.OrderArgs{
 		TokenID:  req.TokenID,
 		Side:     "BUY",
@@ -95,10 +99,9 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 	fillStatus := "filled"
 	verified := b.paper // paper fills are simulated, treat as verified
 	if orderID != "" {
-		time.Sleep(2 * time.Second)
-		orderInfo, orderErr := b.clob.GetOrder(orderID)
+		orderInfo, orderErr := retryGetOrder(b.clob, orderID, 3)
 		if orderErr != nil {
-			slog.Warn("Could not verify order fill", "orderID", orderID, "error", orderErr)
+			slog.Warn("Could not verify order fill via CLOB", "orderID", orderID, "error", orderErr)
 		} else if orderInfo != nil {
 			verified = true
 			fillStatus = orderInfo.Status
@@ -106,6 +109,27 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 				filledSize = orderInfo.SizeFilled * orderInfo.Price
 			}
 			slog.Info("Order status", "orderID", orderID, "status", fillStatus, "filledUSDC", filledSize)
+		}
+
+		// Fallback: the authenticated /order/{id} endpoint 404s for API keys
+		// not bound via POLY_1271 (observed in production). The public
+		// data-api /trades endpoint needs no auth and reflects matched fills
+		// within seconds, so use it to confirm execution against the portal.
+		if !verified && !b.paper && b.tradingWallet != "" {
+			for attempt := 0; attempt < 4 && !verified; attempt++ {
+				time.Sleep(2 * time.Second)
+				fill, ferr := b.dataAPI.FindRecentFill(b.tradingWallet, req.TokenID, submittedAt)
+				if ferr != nil {
+					slog.Warn("data-api fill check failed", "error", ferr)
+					break
+				}
+				if fill != nil && fill.Size > 0 {
+					verified = true
+					fillStatus = "MATCHED"
+					filledSize = fill.Size * fill.Price
+					slog.Info("Fill confirmed via data-api", "orderID", orderID, "filledUSDC", filledSize, "avgPrice", fill.Price)
+				}
+			}
 		}
 	}
 
@@ -116,10 +140,24 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		// phantom trade / position.
 		if !verified {
 			slog.Warn("Live order fill unverified, refusing to record", "orderID", orderID, "status", fillStatus)
+			// Best-effort cancel so an unconfirmed resting order does not
+			// keep collateral locked and fill later outside our books.
+			if orderID != "" {
+				if _, cerr := b.clob.CancelOrder(orderID); cerr != nil {
+					slog.Warn("cancel of unverified order failed", "orderID", orderID, "error", cerr)
+				} else {
+					slog.Info("cancelled unverified resting order", "orderID", orderID)
+				}
+			}
 			return nil, fmt.Errorf("order fill unverified (orderID=%s)", orderID)
 		}
 		if fillStatus != "FILLED" && fillStatus != "filled" && fillStatus != "MATCHED" {
 			slog.Warn("Live order not filled", "orderID", orderID, "status", fillStatus)
+			if orderID != "" {
+				if _, cerr := b.clob.CancelOrder(orderID); cerr != nil {
+					slog.Warn("cancel of unfilled order failed", "orderID", orderID, "error", cerr)
+				}
+			}
 			return nil, fmt.Errorf("order not filled: %s (orderID=%s)", fillStatus, orderID)
 		}
 	}
@@ -178,10 +216,26 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 	}, nil
 }
 
+// retryGetOrder polls GetOrder a few times: matched fills can take a couple
+// of seconds to register on the CLOB order endpoint after placement.
+func retryGetOrder(c clob.Client, orderID string, attempts int) (*clob.OrderStatus, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		info, err := c.GetOrder(orderID)
+		if err == nil && info != nil {
+			return info, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 type DeadTokenError struct {
 	TokenID string
 }
-
 func (e *DeadTokenError) Error() string {
 	return "dead orderbook for token " + e.TokenID[:min(12, len(e.TokenID))]
 }

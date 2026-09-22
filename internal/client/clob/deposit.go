@@ -38,6 +38,15 @@ var (
 )
 
 func (c *ClobClient) CheckUSDCBalance(rpcURL string) (float64, float64, error) {
+	return CheckWalletUSDCBalance(rpcURL, c.signer.Address())
+}
+
+// CheckWalletUSDCBalance reads USDC (native + bridged) held by any address
+// (typically the POLY_1271 proxy/deposit wallet, which is where Polymarket
+// keeps tradable collateral). This is the *available* cash for new orders,
+// unlike the data-api portfolio value which is money already locked in open
+// positions.
+func CheckWalletUSDCBalance(rpcURL, walletAddr string) (float64, float64, error) {
 	ctx := context.Background()
 	client, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
@@ -45,7 +54,7 @@ func (c *ClobClient) CheckUSDCBalance(rpcURL string) (float64, float64, error) {
 	}
 	defer client.Close()
 
-	addr := common.HexToAddress(c.signer.Address())
+	addr := common.HexToAddress(walletAddr)
 	balNative, _ := getTokenBalance(ctx, client, usdcNative, addr)
 	balBridged, _ := getTokenBalance(ctx, client, usdcEBridged, addr)
 	return fromWei(balNative, 6), fromWei(balBridged, 6), nil

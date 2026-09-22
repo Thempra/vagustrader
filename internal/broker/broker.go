@@ -42,6 +42,11 @@ type Broker struct {
 	paper       bool
 	notifier    *notify.Notifier
 
+	// tradingWallet is the address that actually owns positions/fills:
+	// the POLY_1271 deposit/proxy wallet in live mode, else the signer EOA.
+	// Used to verify fills against the public data-api.
+	tradingWallet string
+
 	marketMu    sync.RWMutex
 	marketCache map[string]marketCacheEntry
 }
@@ -73,6 +78,10 @@ func (b *Broker) GetConfig() *cfg.AppConfig      { return b.config }
 func (b *Broker) IsPaper() bool                  { return b.paper }
 func (b *Broker) GetNotifier() *notify.Notifier   { return b.notifier }
 func (b *Broker) GetDatabase() *db.DB             { return b.database }
+
+// SetTradingWallet records the wallet that owns live fills (proxy/deposit
+// wallet) so order verification can query the public data-api.
+func (b *Broker) SetTradingWallet(addr string) { b.tradingWallet = addr }
 
 func (b *Broker) GetPositions() ([]db.Position, error) {
 	return b.database.GetPositions()
