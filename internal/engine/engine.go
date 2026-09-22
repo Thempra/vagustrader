@@ -79,6 +79,10 @@ func (e *Engine) Start(ctx context.Context) error {
 
 	brk := broker.New(clobClient, dataAPI, gammaClient, database, &e.config, e.paper, notifier)
 
+	if !e.paper && e.settings.ClobDepositWallet != "" {
+		brk.SetTradingWallet(e.settings.ClobDepositWallet)
+	}
+
 	if e.paper {
 		for _, s := range e.strategies {
 			if s.Name() != "settlement" {
@@ -194,20 +198,22 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 	syncOnce := func() {
 		var balance float64
 		var err error
-		// The real trading collateral lives in the proxy / deposit wallet, not
-		// the signer EOA. The CLOB /balance-allowance for the POLY_1271 account
-		// requires a 1271-bound API key that the current stored creds do not
-		// have, so for live+proxy setups we read the wallet's open-position
-		// portfolio value from the public Polymarket data API instead. This is
-		// read-only and requires no credentials.
+		// The wallet row feeds GetStrategyBalance, which gates live buys
+		// (via the exchange, which sees on-chain collateral). It must hold
+		// the AVAILABLE USDC in the proxy wallet — NOT the data-api
+		// portfolio value, which is money already locked in open positions.
+		// Using portfolio value here made the bot believe it had ~$55 of
+		// spendable cash while on-chain collateral was $0, producing an
+		// endless stream of "insufficient balance" retries.
 		if e.settings.ClobDepositWallet != "" {
-			balance, err = brk.GetDataAPI().PortfolioValue(e.settings.ClobDepositWallet)
-			if err == nil {
-				slog.Info("Live portfolio value",
+			native, bridged, cerr := clob.CheckWalletUSDCBalance(e.settings.RPCURL, e.settings.ClobDepositWallet)
+			if cerr == nil {
+				balance = native + bridged
+				slog.Info("Live collateral synced",
 					"wallet", e.settings.ClobDepositWallet,
-					"balance", balance)
+					"usdc_native", native, "usdc_bridged", bridged)
 			} else {
-				slog.Warn("live portfolio read failed, falling back to CLOB balance", "error", err)
+				slog.Warn("live on-chain collateral read failed, falling back to CLOB balance", "error", cerr)
 				balance, err = brk.GetBalance()
 			}
 		} else {
@@ -223,6 +229,15 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 			}
 		}
 		slog.Info("Live balance synced", "balance", balance, "strategies", len(e.strategies))
+
+		// Portfolio (open positions) value is informational only; log it so
+		// the real account state is visible in logs without polluting the
+		// spendable-balance row.
+		if e.settings.ClobDepositWallet != "" {
+			if pv, perr := brk.GetDataAPI().PortfolioValue(e.settings.ClobDepositWallet); perr == nil {
+				slog.Info("Live portfolio value", "wallet", e.settings.ClobDepositWallet, "balance", pv)
+			}
+		}
 	}
 
 	// Sync immediately at startup so the dashboard is correct right away.

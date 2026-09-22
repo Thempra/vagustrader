@@ -15,6 +15,11 @@ type ContrarianStrategy struct {
 	deadTokens    map[string]int64
 	priceSnapshot map[string]float64
 	snapshotTime  time.Time
+	// tradingPausedUntil stops the strategy from re-submitting buys after
+	// the exchange reports insufficient balance. Without it the strategy
+	// retried every poll forever (2k+ retries observed) since collateral
+	// only frees when positions settle.
+	tradingPausedUntil time.Time
 }
 
 func New() *ContrarianStrategy {
@@ -54,6 +59,12 @@ func (s *ContrarianStrategy) Run(ctx context.Context, b *broker.Broker) error {
 func (s *ContrarianStrategy) tick(b *broker.Broker) error {
 	config := b.GetConfig().Strategies.Contrarian
 	risk := b.GetConfig().Risk
+
+	if !b.IsPaper() && time.Now().Before(s.tradingPausedUntil) {
+		slog.Info("Contrarian: trading paused after insufficient balance",
+			"resume_after", s.tradingPausedUntil.Format(time.RFC3339))
+		return nil
+	}
 
 	gamma := b.GetGamma()
 	if gamma == nil {
@@ -194,12 +205,14 @@ func (s *ContrarianStrategy) tick(b *broker.Broker) error {
 					Strategy: "contrarian",
 				})
 				if buyErr != nil {
-					if isDeadErr(buyErr) {
-						s.deadTokens[oppositeTokenID] = now + 3600
-					} else if strings.Contains(buyErr.Error(), "insufficient balance") {
-						slog.Warn("Contrarian: insufficient balance")
-						return nil
-					} else {
+						if isDeadErr(buyErr) {
+							s.deadTokens[oppositeTokenID] = now + 3600
+						} else if strings.Contains(buyErr.Error(), "insufficient balance") {
+							s.tradingPausedUntil = time.Now().Add(30 * time.Minute)
+							slog.Warn("Contrarian: insufficient balance, pausing new buys for 30m",
+								"resume_after", s.tradingPausedUntil.Format(time.RFC3339))
+							return nil
+						} else {
 						slog.Error("Contrarian buy error", "token", oppositeTokenID[:minL(12, len(oppositeTokenID))], "error", buyErr)
 					}
 					continue

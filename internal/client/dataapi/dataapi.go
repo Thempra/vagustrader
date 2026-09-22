@@ -172,6 +172,76 @@ func (c *Client) GetPositions(userAddress string) ([]Position, error) {
 	return positions, nil
 }
 
+// FillCheck is a confirmed on-portal fill for a token, read from the public
+// trades endpoint. Used to verify live order fills when the authenticated
+// CLOB /order/{id} endpoint is unavailable (it 404s for L1/L2 keys derived
+// without 1271 binding).
+type FillCheck struct {
+	Size  float64 // shares filled
+	Price float64
+}
+
+// FindRecentFill returns fills for tokenID placed after `sinceUnix` by the
+// given wallet. The public /trades endpoint reflects matched fills within a
+// couple of seconds and requires no auth, so it is the reliable source of
+// "did my order actually execute".
+func (c *Client) FindRecentFill(userAddress, tokenID string, sinceUnix int64) (*FillCheck, error) {
+	u, err := url.Parse(c.baseURL + "/trades")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("user", userAddress)
+	q.Set("limit", "100")
+	q.Set("takerOnly", "false")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	// Polymarket's CDN 403s default HTTP client user agents
+	// (Go-http-client/Python-urllib); identify ourselves.
+	req.Header.Set("User-Agent", "vagustrader/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("trades request failed: %d", resp.StatusCode)
+	}
+	var raw []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	var agg *FillCheck
+	var total float64
+	for _, d := range raw {
+		if stringVal(d, "asset") != tokenID {
+			continue
+		}
+		if int64(floatVal(d, "timestamp")) < sinceUnix {
+			continue
+		}
+		size := floatVal(d, "size")
+		price := floatVal(d, "price")
+		if agg == nil {
+			agg = &FillCheck{}
+		}
+		agg.Size += size
+		agg.Price = price
+		total += size * price
+	}
+	if agg == nil || total <= 0 {
+		return nil, nil
+	}
+	if agg.Size > 0 {
+		agg.Price = total / agg.Size
+	}
+	return agg, nil
+}
+
 func (c *Client) GetActivity(userAddress string, limit int) ([]map[string]interface{}, error) {
 	u, err := url.Parse(c.baseURL + "/activity")
 	if err != nil {
