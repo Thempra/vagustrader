@@ -52,6 +52,14 @@ type RiskConfig struct {
 	MaxOpenPositions       int     `yaml:"max_open_positions"`
 	MaxOpenPositionsGlobal int     `yaml:"max_open_positions_global"`
 	DailyLossLimitUSDC     float64 `yaml:"daily_loss_limit_usdc"`
+	// MaxDaysToEnd is a hard, broker-level rule applied to EVERY strategy
+	// in Buy(): never open a position in a market resolving further out
+	// than this many days. Long-dated markets lock collateral and bleed
+	// (live incident: "Heisman 2026", "MLB WAR leader" held to near-zero).
+	// The yaml loader merges over defaults, so the shipped default is 7
+	// days even when the risk block omits this key; set 0 explicitly in
+	// config.yml to disable the check.
+	MaxDaysToEnd float64 `yaml:"max_days_to_end"`
 }
 
 type SizeTier struct {
@@ -187,6 +195,7 @@ func LoadAppConfig(path string) AppConfig {
 			MaxOpenPositions:       10,
 			MaxOpenPositionsGlobal: 100,
 			DailyLossLimitUSDC:     200.0,
+			MaxDaysToEnd:           7,
 		},
 		Strategies: StrategiesConfig{
 			CopyTrading: CopyTradingConfig{

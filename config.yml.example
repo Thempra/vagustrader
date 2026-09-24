@@ -2,6 +2,7 @@ risk:
   max_position_usdc: 50.0
   max_open_positions: 10
   daily_loss_limit_usdc: 200.0
+  max_days_to_end: 7   # hard rule: never buy markets resolving >7d out (0=disable)
 
 strategies:
   copy_trading:

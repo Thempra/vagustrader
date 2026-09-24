@@ -3,6 +3,7 @@ risk:
   max_open_positions: 2000
   max_open_positions_global: 5000
   daily_loss_limit_usdc: 200.0
+  max_days_to_end: 7   # hard rule: never buy markets resolving >7d out (0=disable)
 
 strategies:
   copy_trading:
