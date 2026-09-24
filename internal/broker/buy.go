@@ -58,6 +58,34 @@ func (b *Broker) Buy(ctx context.Context, req BuyRequest) (*TradeResult, error) 
 		}
 	}
 
+	// Hard rule, enforced for EVERY strategy at the broker gate: never open
+	// a position in a market resolving further out than Risk.MaxDaysToEnd
+	// (default 7 days). Long-dated markets lock collateral for months and
+	// were the bulk of the live drawdown (Heisman-2026, MLB-season leads).
+	// Checked BEFORE placing any order. Markets with an unknown end date are
+	// rejected too — an unverifiable horizon is not a short-dated bet.
+	if maxDays := b.config.Risk.MaxDaysToEnd; maxDays > 0 {
+		endDateStr := ""
+		if md := b.GetMarketData(req.MarketID); md != nil {
+			endDateStr, _ = md["end_date_iso"].(string)
+		}
+		if endDateStr == "" {
+			slog.Warn("rejecting buy: market end date unknown (max_days_to_end rule)",
+				"market", req.MarketID[:min(12, len(req.MarketID))], "strategy", req.Strategy)
+			return nil, fmt.Errorf("market end date unknown; max_days_to_end=%.0f rule rejects unbounded horizons", maxDays)
+		}
+		endDt, perr := time.Parse(time.RFC3339, endDateStr)
+		if perr != nil {
+			return nil, fmt.Errorf("market end date %q unparseable; max_days_to_end rule: %w", endDateStr, perr)
+		}
+		if daysLeft := time.Until(endDt).Hours() / 24; daysLeft > maxDays {
+			slog.Warn("rejecting buy: market resolves beyond max_days_to_end",
+				"market", req.MarketID[:min(12, len(req.MarketID))], "strategy", req.Strategy,
+				"days_left", int(daysLeft), "max_days", int(maxDays))
+			return nil, fmt.Errorf("market resolves in %.1f days > max_days_to_end %.0f", daysLeft, maxDays)
+		}
+	}
+
 	var exchangeAddr string
 	if req.NegRisk {
 		exchangeAddr = clob.NegRiskExchangeV2
