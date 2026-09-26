@@ -198,26 +198,20 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 	syncOnce := func() {
 		var balance float64
 		var err error
-		// The wallet row feeds GetStrategyBalance, which gates live buys
-		// (via the exchange, which sees on-chain collateral). It must hold
-		// the AVAILABLE USDC in the proxy wallet — NOT the data-api
-		// portfolio value, which is money already locked in open positions.
-		// Using portfolio value here made the bot believe it had ~$55 of
-		// spendable cash while on-chain collateral was $0, producing an
-		// endless stream of "insufficient balance" retries.
-		if e.settings.ClobDepositWallet != "" {
-			native, bridged, cerr := clob.CheckWalletUSDCBalance(e.settings.RPCURL, e.settings.ClobDepositWallet)
-			if cerr == nil {
-				balance = native + bridged
-				slog.Info("Live collateral synced",
-					"wallet", e.settings.ClobDepositWallet,
-					"usdc_native", native, "usdc_bridged", bridged)
-			} else {
-				slog.Warn("live on-chain collateral read failed, falling back to CLOB balance", "error", cerr)
-				balance, err = brk.GetBalance()
-			}
+		// The wallet row feeds GetStrategyBalance, which gates live buys.
+		// It must hold the real COLLATERAL available to trade — what the
+		// exchange keeps on deposit for the proxy wallet. That is exactly
+		// what GetBalance() returns via /balance-allowance?asset_type=
+		// COLLATERAL (GetBalance presents the proxy wallet as POLY_ADDRESS;
+		// see clob.GetBalance). Reading the raw USDC balanceOf on-chain is
+		// wrong: trading collateral sits inside the CTF Exchange contract,
+		// not as a wallet token balance.
+		balance, err = brk.GetBalance()
+		if err == nil {
+			slog.Info("Live collateral synced (CLOB balance)",
+				"wallet", e.settings.ClobDepositWallet, "balance", balance, "strategy", len(e.strategies))
 		} else {
-			balance, err = brk.GetBalance()
+			slog.Warn("live CLOB balance read failed", "error", err)
 		}
 		if err != nil {
 			slog.Warn("live balance sync failed", "error", err)
