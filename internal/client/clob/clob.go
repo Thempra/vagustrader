@@ -103,17 +103,6 @@ func (c *ClobClient) GetBalance() (float64, error) {
 	ts := time.Now().Unix()
 	sig := BuildHMACSignature(c.creds.APISecret, ts, "GET", "/balance-allowance", "")
 	headers := c.authHeaders(ts, sig)
-	// The API key is bound to the POLY_1271 proxy/deposit wallet, and so is
-	// the exchange collateral. /balance-allowance only reports the balance of
-	// the wallet that the key resolves to, so when a deposit wallet is
-	// configured we must present IT — not the signer EOA — or a funded proxy
-	// wallet reads as $0. This override is scoped to balance reads only and
-	// intentionally does not touch order signing (authHeaders).
-	balAddr := headers["POLY_ADDRESS"]
-	if c.DepositWallet != "" {
-		balAddr = c.DepositWallet
-		headers["POLY_ADDRESS"] = balAddr
-	}
 	url := c.host + "/balance-allowance?asset_type=COLLATERAL"
 	var rawBytes []byte
 	if err := c.doRequestRaw(http.MethodGet, url, nil, headers, &rawBytes); err != nil {
@@ -127,10 +116,14 @@ func (c *ClobClient) GetBalance() (float64, error) {
 	if err := json.Unmarshal(rawBytes, &raw); err != nil {
 		return 0, fmt.Errorf("decode balance: %w", err)
 	}
+	addr := c.signer.Address()
+	if c.creds.Address != "" {
+		addr = c.creds.Address
+	}
 	slog.Info("GetBalance parsed",
 		"balance", raw.Balance,
 		"allowance", raw.Allowance,
-		"pol_address", balAddr,
+		"pol_address", addr,
 		"signer_address", c.signer.Address(),
 		"api_key_prefix", c.creds.APIKey[:min(8, len(c.creds.APIKey))],
 	)
