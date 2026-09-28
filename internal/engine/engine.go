@@ -198,14 +198,13 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 	syncOnce := func() {
 		var balance float64
 		var err error
-		// The wallet row feeds GetStrategyBalance, which gates live buys.
-		// It must hold the real COLLATERAL available to trade — what the
-		// exchange keeps on deposit for the proxy wallet. That is exactly
-		// what GetBalance() returns via /balance-allowance?asset_type=
-		// COLLATERAL (GetBalance presents the proxy wallet as POLY_ADDRESS;
-		// see clob.GetBalance). Reading the raw USDC balanceOf on-chain is
-		// wrong: trading collateral sits inside the CTF Exchange contract,
-		// not as a wallet token balance.
+		// The wallet row feeds GetStrategyBalance, which gates live buys. It
+		// must hold the spendable collateral available to the account the bot
+		// trades with. We read it via GetBalance() (/balance-allowance?asset_
+		// type=COLLATERAL), which presents the same POLY_ADDRESS as the API
+		// key the bot holds — so it returns a non-401 answer. (The CLOB
+		// collateral actually lives in the CTF Exchange contract, not as a
+		// wallet token balance, so an on-chain USDC balanceOf read is wrong.)
 		balance, err = brk.GetBalance()
 		if err == nil {
 			slog.Info("Live collateral synced (CLOB balance)",
