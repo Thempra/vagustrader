@@ -53,24 +53,9 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 
-	var clobClient clob.Client
-	if e.paper {
-		clobClient = clob.NewPaperClient("data/vagustrader.db")
-		slog.Info("Paper trading mode")
-	} else {
-		creds, err := e.resolveCreds()
-		if err != nil {
-			return err
-		}
-		clobClient, err = clob.NewClobClient(e.settings.PrivateKey, creds, e.settings.ClobHost, e.settings.ChainID)
-		if err != nil {
-			return err
-		}
-		if e.settings.ClobDepositWallet != "" {
-			clobClient.(*clob.ClobClient).DepositWallet = e.settings.ClobDepositWallet
-			slog.Info("POLY_1271 deposit wallet", "addr", e.settings.ClobDepositWallet)
-		}
-		slog.Info("Live trading mode")
+	clobClient, err := e.buildClobClient()
+	if err != nil {
+		return err
 	}
 
 	gammaClient := gamma.NewClient(e.settings.GammaAPIURL)
@@ -83,26 +68,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		brk.SetTradingWallet(e.settings.ClobDepositWallet)
 	}
 
-	if e.paper {
-		for _, s := range e.strategies {
-			if s.Name() != "settlement" {
-				database.InitPaperWallet(s.Name(), e.paperBankroll())
-				w, _ := database.GetWallet(s.Name())
-				slog.Info("Paper wallet initialized", "strategy", s.Name(), "balance", w.Balance)
-			}
-		}
-	}
-
-	if !e.paper {
-		tradingCount := 0
-		for _, s := range e.strategies {
-			if s.Name() != "settlement" {
-				tradingCount++
-			}
-		}
-		if tradingCount > 1 {
-			return fmt.Errorf("live mode: only 1 trading strategy allowed, got %d — use paper mode for multi-strategy", tradingCount)
-		}
+	if err := e.prepareWallets(database); err != nil {
+		return err
 	}
 
 	names := make([]string, len(e.strategies))
@@ -135,6 +102,55 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 	slog.Info("Engine shutdown complete")
+	return nil
+}
+
+// buildClobClient constructs the trading client for the current mode: a
+// paper simulator in paper mode, or a live CLOB client (env creds or derived
+// from the private key) otherwise.
+func (e *Engine) buildClobClient() (clob.Client, error) {
+	if e.paper {
+		slog.Info("Paper trading mode")
+		return clob.NewPaperClient("data/vagustrader.db"), nil
+	}
+	creds, err := e.resolveCreds()
+	if err != nil {
+		return nil, err
+	}
+	clobClient, err := clob.NewClobClient(e.settings.PrivateKey, creds, e.settings.ClobHost, e.settings.ChainID)
+	if err != nil {
+		return nil, err
+	}
+	if e.settings.ClobDepositWallet != "" {
+		clobClient.DepositWallet = e.settings.ClobDepositWallet
+		slog.Info("POLY_1271 deposit wallet", "addr", e.settings.ClobDepositWallet)
+	}
+	slog.Info("Live trading mode")
+	return clobClient, nil
+}
+
+// prepareWallets initializes paper wallets (paper mode) and enforces the
+// live-mode single-trading-strategy rule.
+func (e *Engine) prepareWallets(database *db.DB) error {
+	if e.paper {
+		for _, s := range e.strategies {
+			if s.Name() != "settlement" {
+				database.InitPaperWallet(s.Name(), e.paperBankroll())
+				w, _ := database.GetWallet(s.Name())
+				slog.Info("Paper wallet initialized", "strategy", s.Name(), "balance", w.Balance)
+			}
+		}
+		return nil
+	}
+	tradingCount := 0
+	for _, s := range e.strategies {
+		if s.Name() != "settlement" {
+			tradingCount++
+		}
+	}
+	if tradingCount > 1 {
+		return fmt.Errorf("live mode: only 1 trading strategy allowed, got %d — use paper mode for multi-strategy", tradingCount)
+	}
 	return nil
 }
 
@@ -196,41 +212,21 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 	const interval = 60 * time.Second
 
 	syncOnce := func() {
-		var balance float64
-		var err error
-		// The wallet row feeds GetStrategyBalance, which gates live buys. It
-		// must hold the spendable collateral available to the account the bot
-		// trades with. We read it via GetBalance() (/balance-allowance?asset_
-		// type=COLLATERAL), which presents the same POLY_ADDRESS as the API
-		// key the bot holds — so it returns a non-401 answer. (The CLOB
-		// collateral actually lives in the CTF Exchange contract, not as a
-		// wallet token balance, so an on-chain USDC balanceOf read is wrong.)
-		balance, err = brk.GetBalance()
-		if err == nil {
-			slog.Info("Live collateral synced (CLOB balance)",
-				"wallet", e.settings.ClobDepositWallet, "balance", balance, "strategy", len(e.strategies))
-		} else {
-			slog.Warn("live CLOB balance read failed", "error", err)
-		}
+		balance, err := brk.GetBalance()
 		if err != nil {
+			slog.Warn("live CLOB balance read failed", "error", err)
 			slog.Warn("live balance sync failed", "error", err)
 			return
 		}
-		for _, s := range e.strategies {
-			if err := database.SyncRealBalance(s.Name(), balance); err != nil {
-				slog.Warn("live balance sync write failed", "strategy", s.Name(), "error", err)
-			}
-		}
+		slog.Info("Live collateral synced (CLOB balance)",
+			"wallet", e.settings.ClobDepositWallet, "balance", balance, "strategy", len(e.strategies))
+		syncStrategyBalances(database, balance, e.strategies)
 		slog.Info("Live balance synced", "balance", balance, "strategies", len(e.strategies))
 
 		// Portfolio (open positions) value is informational only; log it so
 		// the real account state is visible in logs without polluting the
 		// spendable-balance row.
-		if e.settings.ClobDepositWallet != "" {
-			if pv, perr := brk.GetDataAPI().PortfolioValue(e.settings.ClobDepositWallet); perr == nil {
-				slog.Info("Live portfolio value", "wallet", e.settings.ClobDepositWallet, "balance", pv)
-			}
-		}
+		reportPortfolioValue(brk, e.settings.ClobDepositWallet)
 	}
 
 	// Sync immediately at startup so the dashboard is correct right away.
@@ -245,5 +241,26 @@ func (e *Engine) syncLiveBalances(ctx context.Context, brk *broker.Broker, datab
 		case <-ticker.C:
 			syncOnce()
 		}
+	}
+}
+
+// syncStrategyBalances writes the synced collateral balance into every
+// strategy wallet row (best-effort per strategy).
+func syncStrategyBalances(database *db.DB, balance float64, strategies []strategy.Strategy) {
+	for _, s := range strategies {
+		if err := database.SyncRealBalance(s.Name(), balance); err != nil {
+			slog.Warn("live balance sync write failed", "strategy", s.Name(), "error", err)
+		}
+	}
+}
+
+// reportPortfolioValue logs the open-positions portfolio value when a deposit
+// wallet is configured.
+func reportPortfolioValue(brk *broker.Broker, wallet string) {
+	if wallet == "" {
+		return
+	}
+	if pv, perr := brk.GetDataAPI().PortfolioValue(wallet); perr == nil {
+		slog.Info("Live portfolio value", "wallet", wallet, "balance", pv)
 	}
 }

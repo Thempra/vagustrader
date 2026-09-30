@@ -2,11 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="30">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VagusTrader</title>
-<link rel="stylesheet" href="/static/style.css?v=2">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css?v=3">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
 </head>
 <body>
 <div id="sidebar" class="sidebar">
@@ -159,7 +158,9 @@
     </div>
     <div class="section">
       <div class="section-title">Runtime</div>
-      <table><tbody>
+      <table>
+        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+        <tbody>
         <tr><td class="info-label">Last Updated</td><td class="info-val">{{.LastUpdated}}</td></tr>
         <tr><td class="info-label">Positions</td><td class="info-val">{{.PositionCount}}</td></tr>
         <tr><td class="info-label">Settled Trades</td><td class="info-val">{{.TradeCount}}</td></tr>
@@ -174,6 +175,8 @@
 </div>
 <script>
 var _cd={pnlLabels:{{.PnLTimelineLabels}},pnlData:{{.PnLTimelineData}},trLabels:{{.TraderChartLabels}},trPnL:{{.TraderChartPnL}},trWins:{{.TraderChartWins}},prLabels:{{.PriceChartLabels}},prPnL:{{.PriceChartPnL}},dowLabels:{{.DowChartLabels}},dowPnL:{{.DowChartPnL}},hourLabels:{{.HourChartLabels}},hourPnL:{{.HourChartPnL}},wlData:{{.WinLossData}}};
+// Auto-refresh the dashboard every 30s (replaces the legacy <meta http-equiv="refresh">).
+setTimeout(function(){location.reload();},30000);
 </script>
 <script src="/static/script.js?v=2"></script>
 <script>
@@ -183,10 +186,10 @@ var _cd={pnlLabels:{{.PnLTimelineLabels}},pnlData:{{.PnLTimelineData}},trLabels:
   document.addEventListener('click',function(e){
     var td=e.target.closest('td.side-source');
     if(td){
-      var span=td.querySelector('[data-sources]');
-      if(span){
+        var span=td.querySelector('[data-sources]');
+        if(span){
         e.stopPropagation();
-        var src=JSON.parse(span.getAttribute('data-sources'));
+        var src=JSON.parse(span.dataset.sources||'[]');
         if(!src||!src.length){popup.style.display='none';return;}
         var h='<table class="source-tbl"><tr><th>Trader</th><th>Outcome</th><th>Size</th><th>Price</th></tr>';
         src.forEach(function(s){

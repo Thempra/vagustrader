@@ -21,7 +21,7 @@ body{display:flex;flex-direction:row;gap:0}
 .kpi-sep{width:1px;height:28px;background:var(--border);margin:0 4px}
 .clock{margin-left:auto;font-size:11px;color:var(--dim)}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
-th{position:sticky;top:0;background:var(--bg3);padding:5px 8px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;text-align:left;font-weight:600;border-bottom:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none}
+th{position:sticky;top:0;background:var(--bg3);padding:5px 8px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;text-align:left;font-weight:600;border-bottom:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;position:relative}
 td{padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;vertical-align:middle;overflow:hidden;text-overflow:ellipsis}
 tr:hover td{background:var(--bg3)}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -35,7 +35,6 @@ th.col-side,td.col-side{text-align:center}
 td.empty{color:var(--dim);text-align:center;padding:20px;font-size:12px}
 th .resize-handle{position:absolute;right:0;top:0;bottom:0;width:4px;cursor:col-resize;background:transparent}
 th .resize-handle:hover{background:var(--accent)}
-th{position:relative}
 .badge-outcome{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:700}
 .badge-yes{background:#14532d;color:var(--green)}.badge-no{background:#450a0a;color:var(--red)}
 .mode-paper{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;background:#44300a;color:var(--yellow)}

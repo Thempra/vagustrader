@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/vagustrader/vagustrader/internal/broker"
+	"github.com/vagustrader/vagustrader/internal/cfg"
+	"github.com/vagustrader/vagustrader/internal/client/gamma"
 	"github.com/vagustrader/vagustrader/internal/db"
 	"github.com/vagustrader/vagustrader/internal/strategy/kelly"
 )
@@ -18,9 +20,9 @@ type snapshotEntry struct {
 }
 
 type MomentumRiderStrategy struct {
-	deadTokens    map[string]int64
-	snapshot      map[string]snapshotEntry
-	snapshotTime  time.Time
+	deadTokens     map[string]int64
+	snapshot       map[string]snapshotEntry
+	snapshotTime   time.Time
 	baselineVolume map[string]float64
 }
 
@@ -47,36 +49,132 @@ func (s *MomentumRiderStrategy) Run(ctx context.Context, b *broker.Broker) error
 	)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if err := s.tick(ctx, b); err != nil {
 			slog.Error("MomentumRider tick error", "error", err)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(config.PollIntervalSeconds) * time.Second):
+		if err := waitOrDone(ctx, time.Duration(config.PollIntervalSeconds)*time.Second); err != nil {
+			return err
 		}
 	}
 }
 
-func (s *MomentumRiderStrategy) tick(ctx context.Context, b *broker.Broker) error {
-	config := b.GetConfig().Strategies.MomentumRider
-	risk := b.GetConfig().Risk
+// waitOrDone blocks for d and returns ctx.Err() if ctx is cancelled first,
+// or nil when the full duration elapsed. Semantically identical to a
+// select over ctx.Done() against time.After(d).
+func waitOrDone(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
-	gamma := b.GetGamma()
-	if gamma == nil {
+// tickStats holds the per-tick scan counters.
+type tickStats struct {
+	scanned          int
+	skippedNoSnap    int
+	skippedPriceMove int
+	skippedVolume    int
+	skippedHeld      int
+	skippedDead      int
+	opened           int
+}
+
+// run carries all mutable tick state so the extracted scan steps stay
+// low-arity methods instead of long parameter lists.
+type run struct {
+	ctx    context.Context
+	b      *broker.Broker
+	s      *MomentumRiderStrategy
+	config cfg.MomentumRiderConfig
+	risk   cfg.RiskConfig
+	held   map[string]struct{}
+	now    int64
+	stats  tickStats
+}
+
+// snapshotDecision reports whether tick must return early after the
+// snapshot bookkeeping step.
+type snapshotDecision int
+
+const (
+	continueTick snapshotDecision = iota
+	endTick
+)
+
+func (s *MomentumRiderStrategy) tick(ctx context.Context, b *broker.Broker) error {
+	r := &run{
+		ctx:    ctx,
+		b:      b,
+		s:      s,
+		config: b.GetConfig().Strategies.MomentumRider,
+		risk:   b.GetConfig().Risk,
+		now:    time.Now().Unix(),
+	}
+
+	gammaClient := b.GetGamma()
+	if gammaClient == nil {
 		return fmt.Errorf("gamma client not available")
 	}
 
-	markets, err := gamma.GetMarkets(500, 0, true, true)
+	markets, err := gammaClient.GetMarkets(500, 0, true, true)
 	if err != nil {
 		return fmt.Errorf("fetch markets: %w", err)
 	}
 
+	currentSnap := buildSnapshot(markets)
+
+	positions, err := b.GetPositionsByStrategy("momentum_rider")
+	if err != nil {
+		return fmt.Errorf("get positions: %w", err)
+	}
+	r.held = make(map[string]struct{}, len(positions))
+	for _, p := range positions {
+		r.held[p.TokenID] = struct{}{}
+	}
+
+	if r.refreshSnapshot(currentSnap) == endTick {
+		return nil
+	}
+
+	for _, m := range markets {
+		if r.scanMarket(m) == stopTick {
+			return nil
+		}
+	}
+
+	r.report()
+	return nil
+}
+
+// scanMarket applies the market-level shape filter and scans its outcomes.
+func (r *run) scanMarket(m gamma.Market) outcomeDecision {
+	if len(m.Outcomes) < 2 || len(m.OutcomePrices) < 2 || len(m.TokenIDs) < 2 {
+		return skipOutcome
+	}
+
+	r.stats.scanned++
+
+	for i, outcome := range m.Outcomes {
+		if i >= len(m.OutcomePrices) || i >= len(m.TokenIDs) {
+			break
+		}
+
+		if r.tryOutcome(m, i, outcome) == stopTick {
+			return stopTick
+		}
+	}
+	return skipOutcome
+}
+
+// buildSnapshot captures the current price/volume of every token.
+func buildSnapshot(markets []gamma.Market) map[string]snapshotEntry {
 	currentSnap := make(map[string]snapshotEntry)
 	for _, m := range markets {
 		for i, tokenID := range m.TokenIDs {
@@ -88,196 +186,214 @@ func (s *MomentumRiderStrategy) tick(ctx context.Context, b *broker.Broker) erro
 			}
 		}
 	}
+	return currentSnap
+}
 
-	positions, err := b.GetPositionsByStrategy("momentum_rider")
-	if err != nil {
-		return fmt.Errorf("get positions: %w", err)
-	}
-	held := make(map[string]struct{}, len(positions))
-	for _, p := range positions {
-		held[p.TokenID] = struct{}{}
-	}
-
-	now := time.Now().Unix()
-	var scanned, skippedNoSnap, skippedPriceMove, skippedVolume, skippedHeld, skippedDead, opened int
-
-	if len(s.snapshot) == 0 {
-		s.snapshot = currentSnap
-		s.snapshotTime = time.Now()
+// refreshSnapshot installs the initial snapshot or refreshes a stale one,
+// returning endTick when the scan must not run this tick.
+func (r *run) refreshSnapshot(currentSnap map[string]snapshotEntry) snapshotDecision {
+	if len(r.s.snapshot) == 0 {
+		r.s.snapshot = currentSnap
+		r.s.snapshotTime = time.Now()
 		slog.Info("MomentumRider: initial snapshot saved", "tokens", len(currentSnap))
-		return nil
+		return endTick
 	}
 
-	lookbackDuration := time.Duration(config.LookbackMinutes) * time.Minute
-	if time.Since(s.snapshotTime) > lookbackDuration {
-		s.snapshot = currentSnap
-		s.snapshotTime = time.Now()
+	lookbackDuration := time.Duration(r.config.LookbackMinutes) * time.Minute
+	if time.Since(r.s.snapshotTime) > lookbackDuration {
+		r.s.snapshot = currentSnap
+		r.s.snapshotTime = time.Now()
 		slog.Info("MomentumRider: snapshot refreshed")
-		return nil
+		return endTick
+	}
+	return continueTick
+}
+
+// outcomeDecision replays the original continue/return-nil control flow.
+type outcomeDecision int
+
+const (
+	skipOutcome outcomeDecision = iota
+	stopTick
+)
+
+// tryOutcome applies the outcome-level momentum filters and, when the
+// candidate passes, places the buy order.
+func (r *run) tryOutcome(m gamma.Market, i int, outcome string) outcomeDecision {
+	tokenID := m.TokenIDs[i]
+	currentPrice := m.OutcomePrices[i]
+	currentVol := m.Volume
+
+	if currentPrice <= 0.05 || currentPrice >= 0.95 {
+		return skipOutcome
 	}
 
-	for _, m := range markets {
-		if len(m.Outcomes) < 2 || len(m.OutcomePrices) < 2 || len(m.TokenIDs) < 2 {
-			continue
-		}
+	if _, h := r.held[tokenID]; h {
+		r.stats.skippedHeld++
+		return skipOutcome
+	}
 
-		scanned++
+	if exp, ok := r.s.deadTokens[tokenID]; ok && exp > r.now {
+		r.stats.skippedDead++
+		return skipOutcome
+	}
 
-		for i, outcome := range m.Outcomes {
-			if i >= len(m.OutcomePrices) || i >= len(m.TokenIDs) {
-				break
-			}
+	prev, hadPrev := r.s.snapshot[tokenID]
+	if !hadPrev || prev.Price <= 0 {
+		r.stats.skippedNoSnap++
+		return skipOutcome
+	}
 
-			tokenID := m.TokenIDs[i]
-			currentPrice := m.OutcomePrices[i]
-			currentVol := m.Volume
+	priceChange := (currentPrice - prev.Price) / prev.Price
 
-			if currentPrice <= 0.05 || currentPrice >= 0.95 {
-				continue
-			}
+	if priceChange < r.config.PriceChangeThreshold {
+		r.stats.skippedPriceMove++
+		return skipOutcome
+	}
 
-			if _, h := held[tokenID]; h {
-				skippedHeld++
-				continue
-			}
-
-			if exp, ok := s.deadTokens[tokenID]; ok && exp > now {
-				skippedDead++
-				continue
-			}
-
-			prev, hadPrev := s.snapshot[tokenID]
-			if !hadPrev || prev.Price <= 0 {
-				skippedNoSnap++
-				continue
-			}
-
-			priceChange := (currentPrice - prev.Price) / prev.Price
-
-			if priceChange < config.PriceChangeThreshold {
-				skippedPriceMove++
-				continue
-			}
-
-			volDelta := currentVol - prev.Volume
-			avgVol := prev.Volume
-			if avgVol > 0 {
-				ratio := volDelta / avgVol
-				if ratio < config.VolumeSpikeMultiplier {
-					skippedVolume++
-					continue
-				}
-			}
-
-			winProb := kelly.EstimateWinProb(currentPrice, "", "", 0)
-			winProb += 0.05
-			if winProb > 0.95 {
-				winProb = 0.95
-			}
-
-			size := kelly.OptimalSize(kelly.EdgeEstimate{
-				WinProb:    winProb,
-				Payout:     1 - currentPrice,
-				LossAmount: currentPrice,
-			}, risk.MaxPositionUSDC*10, config.MaxPosition, config.KellyFraction)
-
-			if size <= 0 {
-				continue
-			}
-
-			mktData := b.GetMarketData(m.ConditionID)
-			tickSize := "0.01"
-			negRisk := false
-			if mktData != nil {
-				if ts, ok := mktData["tick_size"].(string); ok && ts != "" {
-					tickSize = ts
-				}
-				negRisk, _ = mktData["neg_risk"].(bool)
-			}
-
-			question := m.Question
-			if len(question) > 60 {
-				question = question[:60]
-			}
-
-			result, buyErr := b.Buy(ctx, broker.BuyRequest{
-				TokenID:  tokenID,
-				MarketID: m.ConditionID,
-				Outcome:  outcome,
-				Price:    currentPrice,
-				SizeUSDC: size,
-				TickSize: tickSize,
-				NegRisk:  negRisk,
-				Strategy: "momentum_rider",
-			})
-			if buyErr != nil {
-				if isDeadErr(buyErr) {
-					s.deadTokens[tokenID] = now + 3600
-				} else if strings.Contains(buyErr.Error(), "insufficient balance") {
-					slog.Warn("MomentumRider: insufficient balance")
-					return nil
-				} else {
-					slog.Error("MomentumRider buy error", "token", tokenID[:minL(12, len(tokenID))], "error", buyErr)
-				}
-				continue
-			}
-
-			paperTag := ""
-			if b.IsPaper() {
-				paperTag = " [PAPER]"
-			}
-			volPctStr := "+0%"
-			if avgVol > 0 {
-				volPctStr = fmt.Sprintf("%+.0f%%", volDelta/avgVol*100)
-			}
-			slog.Info("MomentumRider opened",
-				"question", question,
-				"outcome", outcome,
-				"change", fmt.Sprintf("%+.1f%%", priceChange*100),
-				"vol_spike", volPctStr,
-				"price", currentPrice,
-				"size", size,
-				"filled", result.FilledSize,
-				"paper", paperTag,
-			)
-
-			if b.GetNotifier() != nil {
-				mode := "LIVE"
-				if b.IsPaper() {
-					mode = "PAPER"
-				}
-				msg := fmt.Sprintf("%s [MomentumRider] %s\n-> %s moved %+.1f%% | vol %s | buying @ %.3f | $%.2f",
-					mode, question, outcome, priceChange*100, volPctStr, currentPrice, size)
-				b.Notify(msg)
-			}
-
-			opened++
-			held[tokenID] = struct{}{}
+	volDelta := currentVol - prev.Volume
+	avgVol := prev.Volume
+	if avgVol > 0 {
+		ratio := volDelta / avgVol
+		if ratio < r.config.VolumeSpikeMultiplier {
+			r.stats.skippedVolume++
+			return skipOutcome
 		}
 	}
 
-	slog.Info("MomentumRider tick end",
-		"scanned", scanned,
-		"no_snap", skippedNoSnap,
-		"price_move", skippedPriceMove,
-		"volume", skippedVolume,
-		"held", skippedHeld,
-		"dead", skippedDead,
-		"opened", opened,
+	size := r.kellySize(currentPrice)
+	if size <= 0 {
+		return skipOutcome
+	}
+
+	tickSize, negRisk := r.orderBookParams(m.ConditionID)
+
+	question := m.Question
+	if len(question) > 60 {
+		question = question[:60]
+	}
+
+	result, buyErr := r.b.Buy(r.ctx, broker.BuyRequest{
+		TokenID:  tokenID,
+		MarketID: m.ConditionID,
+		Outcome:  outcome,
+		Price:    currentPrice,
+		SizeUSDC: size,
+		TickSize: tickSize,
+		NegRisk:  negRisk,
+		Strategy: "momentum_rider",
+	})
+	if buyErr != nil {
+		return r.handleBuyError(tokenID, buyErr)
+	}
+
+	r.announceOpen(question, outcome, priceChange, volDelta, avgVol, currentPrice, size, result.FilledSize)
+	r.stats.opened++
+	r.held[tokenID] = struct{}{}
+	return skipOutcome
+}
+
+// kellySize computes the momentum-adjusted stake for a price.
+func (r *run) kellySize(currentPrice float64) float64 {
+	winProb := kelly.EstimateWinProb(currentPrice, "", "", 0)
+	winProb += 0.05
+	if winProb > 0.95 {
+		winProb = 0.95
+	}
+	return kelly.OptimalSize(kelly.EdgeEstimate{
+		WinProb:    winProb,
+		Payout:     1 - currentPrice,
+		LossAmount: currentPrice,
+	}, r.risk.MaxPositionUSDC*10, r.config.MaxPosition, r.config.KellyFraction)
+}
+
+// orderBookParams reads tick size and neg-risk flags from a single market
+// data fetch, mirroring the original inline lookups.
+func (r *run) orderBookParams(conditionID string) (string, bool) {
+	tickSize := "0.01"
+	negRisk := false
+	mktData := r.b.GetMarketData(conditionID)
+	if mktData != nil {
+		if ts, ok := mktData["tick_size"].(string); ok && ts != "" {
+			tickSize = ts
+		}
+		negRisk, _ = mktData["neg_risk"].(bool)
+	}
+	return tickSize, negRisk
+}
+
+// handleBuyError classifies a failed buy exactly as the original inline
+// if/else-if chain did: dead orderbook marks the token dead, insufficient
+// balance aborts the whole tick, anything else just logs.
+func (r *run) handleBuyError(tokenID string, buyErr error) outcomeDecision {
+	if isDeadErr(buyErr) {
+		r.s.deadTokens[tokenID] = r.now + 3600
+		return skipOutcome
+	}
+	if strings.Contains(buyErr.Error(), "insufficient balance") {
+		slog.Warn("MomentumRider: insufficient balance")
+		return stopTick
+	}
+	slog.Error("MomentumRider buy error", "token", tokenID[:minL(12, len(tokenID))], "error", buyErr)
+	return skipOutcome
+}
+
+// announceOpen logs and notifies a successful open, keeping the original
+// field names, ordering and message formats.
+func (r *run) announceOpen(question, outcome string, priceChange, volDelta, avgVol, price, size, filled float64) {
+	paperTag := ""
+	if r.b.IsPaper() {
+		paperTag = " [PAPER]"
+	}
+	volPctStr := "+0%"
+	if avgVol > 0 {
+		volPctStr = fmt.Sprintf("%+.0f%%", volDelta/avgVol*100)
+	}
+	slog.Info("MomentumRider opened",
+		"question", question,
+		"outcome", outcome,
+		"change", fmt.Sprintf("%+.1f%%", priceChange*100),
+		"vol_spike", volPctStr,
+		"price", price,
+		"size", size,
+		"filled", filled,
+		"paper", paperTag,
 	)
-	if database := b.GetDatabase(); database != nil {
+
+	if r.b.GetNotifier() != nil {
+		mode := "LIVE"
+		if r.b.IsPaper() {
+			mode = "PAPER"
+		}
+		msg := fmt.Sprintf("%s [MomentumRider] %s\n-> %s moved %+.1f%% | vol %s | buying @ %.3f | $%.2f",
+			mode, question, outcome, priceChange*100, volPctStr, price, size)
+		r.b.Notify(msg)
+	}
+}
+
+// report emits the tick-end summary log and diagnostic record.
+func (r *run) report() {
+	slog.Info("MomentumRider tick end",
+		"scanned", r.stats.scanned,
+		"no_snap", r.stats.skippedNoSnap,
+		"price_move", r.stats.skippedPriceMove,
+		"volume", r.stats.skippedVolume,
+		"held", r.stats.skippedHeld,
+		"dead", r.stats.skippedDead,
+		"opened", r.stats.opened,
+	)
+	if database := r.b.GetDatabase(); database != nil {
 		_ = database.RecordDiagnostic(&db.Diagnostic{
 			Strategy:     "momentum_rider",
-			Scanned:      scanned,
-			SkippedNotOU: skippedNoSnap,
-			SkippedPrice: skippedPriceMove,
-			SkippedSport: skippedVolume,
-			SkippedHeld:  skippedHeld,
-			SkippedDead:  skippedDead,
-			Opened:       opened,
+			Scanned:      r.stats.scanned,
+			SkippedNotOU: r.stats.skippedNoSnap,
+			SkippedPrice: r.stats.skippedPriceMove,
+			SkippedSport: r.stats.skippedVolume,
+			SkippedHeld:  r.stats.skippedHeld,
+			SkippedDead:  r.stats.skippedDead,
+			Opened:       r.stats.opened,
 		})
 	}
-	return nil
 }
 
 func isDeadErr(err error) bool {

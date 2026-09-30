@@ -21,13 +21,23 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/vagustrader/vagustrader/internal/cfg"
 	bdb "github.com/vagustrader/vagustrader/internal/db"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed static/*
 var staticFS embed.FS
+
+// CSS class names and HTTP header names repeated across the HTML builders.
+const (
+	classValPos       = "val-pos"
+	classValNeg       = "val-neg"
+	classBadgeYes     = "badge-yes"
+	classBadgeNo      = "badge-no"
+	headerContentType = "Content-Type"
+	ellipsis          = "…"
+)
 
 type DashboardData struct {
 	Positions         []PositionView
@@ -41,52 +51,52 @@ type DashboardData struct {
 	Strategies     []StrategyTab
 	Wallet         *bdb.PaperWallet
 
-	PositionCount int
-	TradeCount      int
-	TradeDisplayed  int
-	TotalCost     float64
-	RealizedPnL   float64
-	UnrealizedPnL float64
-	TotalPnL      float64
-	LiveToday     int
-	PaperToday    int
-	InvestedToday float64
-	Today         string
-	Now           string
-	CSS           string
-	JS            string
+	PositionCount  int
+	TradeCount     int
+	TradeDisplayed int
+	TotalCost      float64
+	RealizedPnL    float64
+	UnrealizedPnL  float64
+	TotalPnL       float64
+	LiveToday      int
+	PaperToday     int
+	InvestedToday  float64
+	Today          string
+	Now            string
+	CSS            string
+	JS             string
 
 	PositionRows template.HTML
 	BalanceRows  template.HTML
 	SnapCells    template.HTML
 
-	StatsOverview      template.HTML
-	TraderStatsRows    template.HTML
-	TraderDetailRows   template.HTML
-	PriceStatsRows     template.HTML
-	DowStatsRows       template.HTML
-	HourStatsRows      template.HTML
-	MarketStatsRows    template.HTML
-	PaperLiveStatsRow  template.HTML
-	StrategyStatsRows  template.HTML
+	StatsOverview     template.HTML
+	TraderStatsRows   template.HTML
+	TraderDetailRows  template.HTML
+	PriceStatsRows    template.HTML
+	DowStatsRows      template.HTML
+	HourStatsRows     template.HTML
+	MarketStatsRows   template.HTML
+	PaperLiveStatsRow template.HTML
+	StrategyStatsRows template.HTML
 
-	PnLTimelineLabels  template.JS
-	PnLTimelineData    template.JS
-	TraderChartLabels   template.JS
-	TraderChartPnL      template.JS
-	TraderChartWins     template.JS
-	PriceChartLabels    template.JS
-	PriceChartPnL       template.JS
-	DowChartLabels      template.JS
-	DowChartPnL         template.JS
-	HourChartLabels     template.JS
-	HourChartPnL        template.JS
-	WinLossData         template.JS
-	PerfAvgWin          float64
-	PerfAvgLoss         float64
-	PerfProfitFactor    float64
-	PerfStreakWins      int
-	PerfStreakLosses    int
+	PnLTimelineLabels template.JS
+	PnLTimelineData   template.JS
+	TraderChartLabels template.JS
+	TraderChartPnL    template.JS
+	TraderChartWins   template.JS
+	PriceChartLabels  template.JS
+	PriceChartPnL     template.JS
+	DowChartLabels    template.JS
+	DowChartPnL       template.JS
+	HourChartLabels   template.JS
+	HourChartPnL      template.JS
+	WinLossData       template.JS
+	PerfAvgWin        float64
+	PerfAvgLoss       float64
+	PerfProfitFactor  float64
+	PerfStreakWins    int
+	PerfStreakLosses  int
 
 	ConfigHTML  template.HTML
 	DBPath      string
@@ -255,6 +265,140 @@ func fetchTokenPrice(tokenID, conditionID string) float64 {
 	return -1
 }
 
+// loadOpenPositions reads open positions for the strategy and stamps live
+// market prices onto them.
+func loadOpenPositions(db *sql.DB, data *DashboardData, strategy string) {
+	posRows, err := db.Query(`
+		SELECT p.token_id, p.market_id, p.outcome, p.size, p.avg_price, p.updated_ts,
+		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
+		       COALESCE((
+		           SELECT t.source_json FROM trades t
+		           WHERE t.token_id = p.token_id AND t.source_json IS NOT NULL AND t.source_json != ''
+		           ORDER BY t.ts DESC LIMIT 1
+		       ), '')
+		FROM positions p
+		LEFT JOIN market_meta m ON p.market_id = m.condition_id
+		WHERE p.strategy = ?
+		ORDER BY p.updated_ts DESC
+	`, strategy)
+	if err == nil {
+		defer posRows.Close()
+		scanPositions(posRows, data)
+	}
+	data.PositionCount = len(data.Positions)
+
+	applyLivePrices(data, fetchTokenPricesParallel(data.Positions))
+}
+
+// loadDayTrades folds the trades placed since UTC midnight into the counters.
+func loadDayTrades(db *sql.DB, data *DashboardData, strategy string, startTs, endTs int64) {
+	todayRows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? AND ts >= ? AND ts < ?", strategy, startTs, endTs)
+	if err != nil {
+		return
+	}
+	defer todayRows.Close()
+	scanTodayTrades(todayRows, data)
+}
+
+// loadSettledTrades reads every settled trade joined with its market meta.
+func loadSettledTrades(db *sql.DB, data *DashboardData, strategy string) {
+	tradeRows, err := db.Query(`
+		SELECT t.id, t.ts, t.market_id, t.token_id, t.side, COALESCE(t.outcome, ''),
+		       t.price, t.size_usdc,
+		       COALESCE(t.order_id, ''), t.paper, t.result,
+		       COALESCE(t.source_json, ''),
+		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
+		       COALESCE(t.strategy, '')
+		FROM trades t
+		LEFT JOIN market_meta m ON t.market_id = m.condition_id
+		WHERE t.result IS NOT NULL AND t.strategy = ?
+		ORDER BY t.ts
+	`, strategy)
+	if err != nil {
+		return
+	}
+	defer tradeRows.Close()
+	scanSettledTrades(tradeRows, data)
+}
+
+// scanPositions folds every open-position row into the dashboard payload.
+func scanPositions(posRows *sql.Rows, data *DashboardData) {
+	for posRows.Next() {
+		var pv PositionView
+		if err := posRows.Scan(&pv.TokenID, &pv.MarketID, &pv.Outcome, &pv.Size, &pv.AvgPrice, &pv.UpdatedTs, &pv.Question, &pv.Slug, &pv.SourceJSON); err != nil {
+			continue
+		}
+		pv.Cost = pv.Size * pv.AvgPrice
+		data.TotalCost += pv.Cost
+		data.Positions = append(data.Positions, pv)
+	}
+}
+
+// applyLivePrices stamps the latest market price onto each open position.
+func applyLivePrices(data *DashboardData, prices map[string]float64) {
+	for i := range data.Positions {
+		p := &data.Positions[i]
+		if price, ok := prices[p.TokenID]; ok {
+			p.CurrentValue = p.Size * price
+			p.PnL = p.CurrentValue - p.Cost
+			p.HasPrice = true
+			data.CurrentValues[p.TokenID] = price
+			data.UnrealizedPnL += p.PnL
+		}
+	}
+}
+
+// settleTradeView fills in the derived display fields of a settled trade.
+func settleTradeView(tv *TradeView, paper int) {
+	tv.Paper = paper == 1
+	tv.DateStr = time.Unix(tv.Ts, 0).UTC().Format("2006-01-02 15:04")
+	if !tv.Result.Valid {
+		tv.ResultStr = "OPEN"
+		return
+	}
+	tv.HasResult = true
+	shares := tv.SizeUSDC / tv.Price
+	recovered := shares * tv.Result.Float64
+	tv.Recovered = recovered
+	tv.Gain = recovered - tv.SizeUSDC
+	if tv.Result.Float64 >= 0.99 {
+		tv.ResultStr = "WIN"
+	} else {
+		tv.ResultStr = "LOSS"
+	}
+}
+
+// scanTodayTrades folds the day's trades into the today counters.
+func scanTodayTrades(todayRows *sql.Rows, data *DashboardData) {
+	for todayRows.Next() {
+		var tv TradeView
+		var paper int
+		if err := todayRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Strategy); err != nil {
+			continue
+		}
+		tv.Paper = paper == 1
+		data.InvestedToday += tv.SizeUSDC
+		if tv.Paper {
+			data.PaperToday++
+		} else {
+			data.LiveToday++
+		}
+	}
+}
+
+// scanSettledTrades folds every settled trade (joined with market meta).
+func scanSettledTrades(tradeRows *sql.Rows, data *DashboardData) {
+	for tradeRows.Next() {
+		var tv TradeView
+		var paper int
+		if err := tradeRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Question, &tv.Slug, &tv.Strategy); err != nil {
+			continue
+		}
+		settleTradeView(&tv, paper)
+		data.RecentTrades = append(data.RecentTrades, tv)
+	}
+}
+
 func fetchTokenPricesParallel(positions []PositionView) map[string]float64 {
 	result := make(map[string]float64)
 	var mu sync.Mutex
@@ -419,116 +563,19 @@ func query(dbPath, strategy string) *DashboardData {
 		Now:            time.Now().UTC().Format("15:04:05") + " UTC",
 	}
 
-	posRows, err := db.Query(`
-		SELECT p.token_id, p.market_id, p.outcome, p.size, p.avg_price, p.updated_ts,
-		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
-		       COALESCE((
-		           SELECT t.source_json FROM trades t
-		           WHERE t.token_id = p.token_id AND t.source_json IS NOT NULL AND t.source_json != ''
-		           ORDER BY t.ts DESC LIMIT 1
-		       ), '')
-		FROM positions p
-		LEFT JOIN market_meta m ON p.market_id = m.condition_id
-		WHERE p.strategy = ?
-		ORDER BY p.updated_ts DESC
-	`, strategy)
-	if err == nil {
-		defer posRows.Close()
-		for posRows.Next() {
-			var pv PositionView
-			if err := posRows.Scan(&pv.TokenID, &pv.MarketID, &pv.Outcome, &pv.Size, &pv.AvgPrice, &pv.UpdatedTs, &pv.Question, &pv.Slug, &pv.SourceJSON); err != nil {
-				continue
-			}
-			pv.Cost = pv.Size * pv.AvgPrice
-			data.TotalCost += pv.Cost
-			data.Positions = append(data.Positions, pv)
-		}
-	}
-	data.PositionCount = len(data.Positions)
-
-	prices := fetchTokenPricesParallel(data.Positions)
-	for i := range data.Positions {
-		p := &data.Positions[i]
-		if price, ok := prices[p.TokenID]; ok {
-			p.CurrentValue = p.Size * price
-			p.PnL = p.CurrentValue - p.Cost
-			p.HasPrice = true
-			data.CurrentValues[p.TokenID] = price
-			data.UnrealizedPnL += p.PnL
-		}
-	}
+	loadOpenPositions(db, data, strategy)
 
 	today := time.Now().UTC()
 	startOfDay := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
 	startTs := startOfDay.Unix()
-	endTs := endOfDay.Unix()
+	endTs := startOfDay.Add(24 * time.Hour).Unix()
 
-	todayRows, err := db.Query("SELECT id, ts, market_id, token_id, side, COALESCE(outcome, ''), price, size_usdc, COALESCE(order_id, ''), paper, result, COALESCE(source_json, ''), COALESCE(strategy, '') FROM trades WHERE strategy = ? AND ts >= ? AND ts < ?", strategy, startTs, endTs)
-	if err == nil {
-		defer todayRows.Close()
-		for todayRows.Next() {
-			var tv TradeView
-			var paper int
-			if err := todayRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Strategy); err != nil {
-				continue
-			}
-			tv.Paper = paper == 1
-			data.InvestedToday += tv.SizeUSDC
-			if tv.Paper {
-				data.PaperToday++
-			} else {
-				data.LiveToday++
-			}
-		}
-	}
-
-	tradeRows, err := db.Query(`
-		SELECT t.id, t.ts, t.market_id, t.token_id, t.side, COALESCE(t.outcome, ''),
-		       t.price, t.size_usdc,
-		       COALESCE(t.order_id, ''), t.paper, t.result,
-		       COALESCE(t.source_json, ''),
-		       COALESCE(m.question, ''), COALESCE(m.slug, ''),
-		       COALESCE(t.strategy, '')
-		FROM trades t
-		LEFT JOIN market_meta m ON t.market_id = m.condition_id
-		WHERE t.result IS NOT NULL AND t.strategy = ?
-		ORDER BY t.ts
-	`, strategy)
-	if err == nil {
-		defer tradeRows.Close()
-		for tradeRows.Next() {
-			var tv TradeView
-			var paper int
-			if err := tradeRows.Scan(&tv.ID, &tv.Ts, &tv.MarketID, &tv.TokenID, &tv.Side, &tv.Outcome, &tv.Price, &tv.SizeUSDC, new(string), &paper, &tv.Result, &tv.SourceJSON, &tv.Question, &tv.Slug, &tv.Strategy); err != nil {
-				continue
-			}
-			tv.Paper = paper == 1
-			tv.DateStr = time.Unix(tv.Ts, 0).UTC().Format("2006-01-02 15:04")
-			if tv.Result.Valid {
-				tv.HasResult = true
-				shares := tv.SizeUSDC / tv.Price
-				recovered := shares * tv.Result.Float64
-				tv.Recovered = recovered
-				tv.Gain = recovered - tv.SizeUSDC
-				if tv.Result.Float64 >= 0.99 {
-					tv.ResultStr = "WIN"
-				} else {
-					tv.ResultStr = "LOSS"
-				}
-			} else {
-				tv.ResultStr = "OPEN"
-			}
-			data.RecentTrades = append(data.RecentTrades, tv)
-		}
-	}
+	loadDayTrades(db, data, strategy, startTs, endTs)
+	loadSettledTrades(db, data, strategy)
 	data.TradeCount = len(data.RecentTrades)
-
-	displayLimit := 500
-	if len(data.RecentTrades) > displayLimit {
-		data.TradeDisplayed = displayLimit
-	} else {
-		data.TradeDisplayed = len(data.RecentTrades)
+	data.TradeDisplayed = len(data.RecentTrades)
+	if data.TradeDisplayed > 500 {
+		data.TradeDisplayed = 500
 	}
 
 	if snaps, err := database.GetPNLSnapshotsByStrategy(strategy, 100000); err == nil {
@@ -581,7 +628,7 @@ func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "\u2026"
+	return s[:maxLen] + ellipsis
 }
 
 func pnlClass(val interface{}) string {
@@ -605,10 +652,10 @@ func pnlClass(val interface{}) string {
 }
 
 func outcomeBadge(outcome string) string {
-	cls := "badge-yes"
+	cls := classBadgeYes
 	outcomeLower := strings.ToLower(outcome)
 	if outcomeLower == "no" || outcomeLower == "false" {
-		cls = "badge-no"
+		cls = classBadgeNo
 	}
 	return fmt.Sprintf(`<span class="badge-outcome %s">%s</span>`, cls, outcome)
 }
@@ -682,9 +729,9 @@ func renderPositionRows(positions []PositionView) template.HTML {
 	var b strings.Builder
 	for _, p := range positions {
 		cost := p.Size * p.AvgPrice
-		badge := "badge-no"
+		badge := classBadgeNo
 		if strings.EqualFold(p.Outcome, "yes") || strings.EqualFold(p.Outcome, "true") || strings.EqualFold(p.Outcome, "over") || strings.EqualFold(p.Outcome, "buy") {
-			badge = "badge-yes"
+			badge = classBadgeYes
 		}
 		sourceDataAttr := ""
 		if p.SourceJSON != "" && p.SourceJSON != "[]" {
@@ -708,58 +755,75 @@ func renderBalanceRows(trades []TradeView) template.HTML {
 	}
 	var b strings.Builder
 	for _, t := range trades {
-		modeBadge := `<span class="mode-live">L</span>`
-		if t.Paper {
-			modeBadge = `<span class="mode-paper">P</span>`
-		}
-		var recovered, gainCell string
-		if t.HasResult {
-			recovered = fmt.Sprintf(`<td class="num usd">$%.2f</td>`, t.Recovered)
-			gainClass := "val-pos"
-			if t.Gain < 0 {
-				gainClass = "val-neg"
-			}
-			gainCell = fmt.Sprintf(`<td class="num %s">$%+ .2f</td>`, gainClass, t.Gain)
-		} else {
-			recovered = `<td class="num dim">—</td>`
-			gainCell = `<td class="num dim">—</td>`
-		}
-		displayOutcome := t.Outcome
-		if displayOutcome == "" {
-			displayOutcome = t.Side
-		}
-		badge := "badge-no"
-		outcomeLower := strings.ToLower(displayOutcome)
-		if outcomeLower == "yes" || outcomeLower == "true" || outcomeLower == "over" || outcomeLower == "buy" {
-			badge = "badge-yes"
-		}
-		sourceDataAttr := ""
-		if t.SourceJSON != "" && t.SourceJSON != "[]" {
-			sourceDataAttr = fmt.Sprintf(` data-sources='%s'`, t.SourceJSON)
-		}
-		sideCell := fmt.Sprintf(`<span class="badge-outcome %s"%s>%s</span>`, badge, sourceDataAttr, displayOutcome)
-		strategyBadge := ""
-		if t.Strategy != "" {
-			strategyBadge = fmt.Sprintf(`<span class="strategy-badge">%s</span>`, t.Strategy)
-		}
-		resultBadge := `<span class="result-open">—</span>`
-		if t.HasResult {
-			if t.Result.Float64 >= 0.99 {
-				resultBadge = `<span class="result-win">WIN</span>`
-			} else {
-				resultBadge = `<span class="result-loss">LOSS</span>`
-			}
-		}
-		marketLink := t.Question
-		if t.Slug != "" {
-			marketLink = fmt.Sprintf(`<a href="https://polymarket.com/market/%s" target="_blank" class="mkt-link">%s</a>`, t.Slug, truncate(t.Question, 36))
-		} else if t.Question == "" {
-			marketLink = `<span class="text-secondary">—</span>`
-		}
-		b.WriteString(fmt.Sprintf(`<tr><td class="time-full">%s</td><td>%s</td><td class="mkt-cell">%s</td><td class="col-side side-source">%s</td><td class="num">%.3f</td><td class="num usd">$%.2f</td>%s%s<td class="result-cell">%s</td><td>%s</td></tr>`,
-			t.DateStr, modeBadge, marketLink, sideCell, t.Price, t.SizeUSDC, recovered, gainCell, resultBadge, strategyBadge))
+		b.WriteString(renderBalanceRow(t))
 	}
 	return template.HTML(b.String())
+}
+
+// renderBalanceRow formats one trade row of the balances table.
+func renderBalanceRow(t TradeView) string {
+	modeBadge := `<span class="mode-live">L</span>`
+	if t.Paper {
+		modeBadge = `<span class="mode-paper">P</span>`
+	}
+	recovered, gainCell := recoveredGainCells(t)
+	return fmt.Sprintf(`<tr><td class="time-full">%s</td><td>%s</td><td class="mkt-cell">%s</td><td class="col-side side-source">%s</td><td class="num">%.3f</td><td class="num usd">$%.2f</td>%s%s<td class="result-cell">%s</td><td>%s</td></tr>`,
+		t.DateStr, modeBadge, marketLinkCell(t), sideCell(t), t.Price, t.SizeUSDC, recovered, gainCell, resultCell(t), strategyCell(t))
+}
+
+// recoveredGainCells renders the recovered/gain pair for a settled trade, or
+// the em-dash placeholders while it is still open.
+func recoveredGainCells(t TradeView) (string, string) {
+	if !t.HasResult {
+		return `<td class="num dim">—</td>`, `<td class="num dim">—</td>`
+	}
+	return fmt.Sprintf(`<td class="num usd">$%.2f</td>`, t.Recovered),
+		fmt.Sprintf(`<td class="num %s">$%+ .2f</td>`, pnlClassOf(t.Gain), t.Gain)
+}
+
+// sideCell renders the outcome badge with its optional source-trader payload.
+func sideCell(t TradeView) string {
+	displayOutcome := t.Outcome
+	if displayOutcome == "" {
+		displayOutcome = t.Side
+	}
+	badge := classBadgeNo
+	switch strings.ToLower(displayOutcome) {
+	case "yes", "true", "over", "buy":
+		badge = classBadgeYes
+	}
+	sourceDataAttr := ""
+	if t.SourceJSON != "" && t.SourceJSON != "[]" {
+		sourceDataAttr = fmt.Sprintf(` data-sources='%s'`, t.SourceJSON)
+	}
+	return fmt.Sprintf(`<span class="badge-outcome %s"%s>%s</span>`, badge, sourceDataAttr, displayOutcome)
+}
+
+func strategyCell(t TradeView) string {
+	if t.Strategy == "" {
+		return ""
+	}
+	return fmt.Sprintf(`<span class="strategy-badge">%s</span>`, t.Strategy)
+}
+
+func resultCell(t TradeView) string {
+	if !t.HasResult {
+		return `<span class="result-open">—</span>`
+	}
+	if t.Result.Float64 >= 0.99 {
+		return `<span class="result-win">WIN</span>`
+	}
+	return `<span class="result-loss">LOSS</span>`
+}
+
+func marketLinkCell(t TradeView) string {
+	if t.Slug != "" {
+		return fmt.Sprintf(`<a href="https://polymarket.com/market/%s" target="_blank" class="mkt-link">%s</a>`, t.Slug, truncate(t.Question, 36))
+	}
+	if t.Question == "" {
+		return `<span class="text-secondary">—</span>`
+	}
+	return t.Question
 }
 
 func renderSnapCells(snapshots []SnapshotView) template.HTML {
@@ -842,213 +906,365 @@ func gainFromTrade(t TradeView) float64 {
 	return recovered - t.SizeUSDC
 }
 
+// totals carries the cross-trade aggregates used by the overview cards.
+type totals struct {
+	invested  float64
+	recovered float64
+	wins      int
+	losses    int
+	best      float64
+	worst     float64
+	bestInit  bool
+	worstInit bool
+	sumWin    float64
+	sumLoss   float64
+}
+
+// perfMetrics carries win/loss streaks and averages.
+type perfMetrics struct {
+	avgWin        float64
+	avgLoss       float64
+	profitFactor  float64
+	maxWinStreak  int
+	maxLossStreak int
+}
+
+// statsAgg groups every per-dimension accumulator map plus paper/live counters.
+type statsAgg struct {
+	traderMap   map[string]*traderStat
+	bracketMap  map[string]*bracketStat
+	dowMap      map[string]*dowStat
+	hourMap     map[string]*hourStat
+	marketMap   map[string]*marketStat
+	strategyMap map[string]*strategyStat
+	paperTrades int
+	paperWins   int
+	paperPnL    float64
+	liveTrades  int
+	liveWins    int
+	livePnL     float64
+}
+
+func newStatsAgg() *statsAgg {
+	return &statsAgg{
+		traderMap:   make(map[string]*traderStat),
+		bracketMap:  make(map[string]*bracketStat),
+		dowMap:      make(map[string]*dowStat),
+		hourMap:     make(map[string]*hourStat),
+		marketMap:   make(map[string]*marketStat),
+		strategyMap: make(map[string]*strategyStat),
+	}
+}
+
+// winRatePct is the guarded percentage used across the stats tables.
+func winRatePct(wins, trades int) float64 {
+	if trades > 0 {
+		return float64(wins) / float64(trades) * 100
+	}
+	return 0
+}
+
+// pnlClassOf picks the pos/neg CSS class for a PnL figure.
+func pnlClassOf(v float64) string {
+	if v < 0 {
+		return classValNeg
+	}
+	return classValPos
+}
+
+// truncateAddress renders "0x1234…cdef" for unnamed source wallets.
+func truncateAddress(addr string) string {
+	name := addr
+	if len(name) > 14 {
+		name = name[:6] + ellipsis + name[len(name)-4:]
+	}
+	return name
+}
+
+// displayTraderName prefers the trader label, falling back to the address.
+func displayTraderName(tc *traderStat) string {
+	if tc.Name != "" {
+		return tc.Name
+	}
+	return truncateAddress(tc.Address)
+}
+
+// byPnL desc sorts and truncates a stat slice (interface over the concrete
+// stat types via a PnL accessor supplied by the caller).
+func topByPnL[T any](list []T, pnl func(T) float64, limit int) []T {
+	sort.Slice(list, func(i, j int) bool { return pnl(list[i]) > pnl(list[j]) })
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	return list
+}
+
 func computeAndRenderStats(data *DashboardData) {
 	trades := data.RecentTrades
 	if len(trades) == 0 {
 		data.StatsOverview = template.HTML(`<div class="empty-state">No settled trades yet</div>`)
 		return
 	}
+	tt := &totals{}
+	agg := newStatsAgg()
+	ingestStats(trades, tt, agg)
+	c := computePerfMetrics(trades, tt)
 
-	var totalInvested, totalRecovered float64
-	var winCount, lossCount int
-	var bestTrade, worstTrade float64
-	bestInit, worstInit := false, false
-	var sumWinGain, sumLossGain float64
+	data.PerfAvgWin = c.avgWin
+	data.PerfAvgLoss = c.avgLoss
+	data.PerfProfitFactor = c.profitFactor
+	data.PerfStreakWins = c.maxWinStreak
+	data.PerfStreakLosses = c.maxLossStreak
 
-	traderMap := make(map[string]*traderStat)
-	bracketMap := make(map[string]*bracketStat)
-	dowMap := make(map[string]*dowStat)
-	hourMap := make(map[string]*hourStat)
-	marketMap := make(map[string]*marketStat)
-	strategyMap := make(map[string]*strategyStat)
-	var paperTrades, liveTrades, paperWins, liveWins int
-	var paperPnL, livePnL float64
+	traderList := statsByPnL(agg.traderMap, func(t *traderStat) float64 { return t.PnL }, 20)
+	data.TraderStatsRows, data.TraderDetailRows = renderTraderTables(traderList)
 
+	bracketOrder := []string{"0.00-0.20", "0.20-0.40", "0.40-0.60", "0.60-0.80", "0.80-1.00"}
+	dowOrder := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+	hourOrder := []string{"00-03", "04-07", "08-11", "12-15", "16-19", "20-23"}
+	data.PriceStatsRows = renderOrderedRows(agg.bracketMap, bracketOrder, bracketRow)
+	data.DowStatsRows = renderOrderedRows(agg.dowMap, dowOrder, dowRow)
+	data.HourStatsRows = renderOrderedRows(agg.hourMap, hourOrder, hourRow)
+
+	marketList := topByPnL(statsValues(agg.marketMap), func(m *marketStat) float64 { return m.PnL }, 30)
+	data.MarketStatsRows = renderMarketTable(marketList)
+	data.StrategyStatsRows = renderStrategyTable(topByPnL(statsValues(agg.strategyMap), func(s *strategyStat) float64 { return s.PnL }, 1<<30))
+	data.PaperLiveStatsRow = renderPaperLiveRow(agg)
+
+	// ── Chart.js JSON data ──
+	data.PnLTimelineLabels, data.PnLTimelineData = renderSnapshotTimeline(data.SnapshotsReversed)
+	data.TraderChartLabels, data.TraderChartPnL, data.TraderChartWins = renderTraderChart(traderList)
+	data.PriceChartLabels, data.PriceChartPnL = renderOrderedChartSeries(agg.bracketMap, bracketOrder, bracketChartLabel)
+	data.DowChartLabels, data.DowChartPnL = renderOrderedChartSeries(agg.dowMap, dowOrder, dowChartLabel)
+	data.HourChartLabels, data.HourChartPnL = renderOrderedChartSeries(agg.hourMap, hourOrder, hourChartLabel)
+
+	// Win/Loss doughnut
+	data.WinLossData = template.JS(fmt.Sprintf("[%d,%d]", tt.wins, tt.losses))
+
+	data.StatsOverview = renderOverview(tt, c)
+}
+
+// ingestStats replays the original single pass over settled trades, feeding
+// every accumulator exactly once per trade and in the same order.
+func ingestStats(trades []TradeView, tt *totals, agg *statsAgg) {
 	for _, t := range trades {
 		gain := gainFromTrade(t)
 		shares := t.SizeUSDC / t.Price
 		recovered := shares * t.Result.Float64
+		won := gain >= 0
 
-		totalInvested += t.SizeUSDC
-		totalRecovered += recovered
-
-		if gain >= 0 {
-			winCount++
-			sumWinGain += gain
+		tt.invested += t.SizeUSDC
+		tt.recovered += recovered
+		if won {
+			tt.wins++
+			tt.sumWin += gain
 		} else {
-			lossCount++
-			sumLossGain += gain
+			tt.losses++
+			tt.sumLoss += gain
 		}
+		tt.observe(gain)
+		agg.observeMode(t.Paper, won, gain)
 
-		if !bestInit || gain > bestTrade {
-			bestTrade = gain
-			bestInit = true
-		}
-		if !worstInit || gain < worstTrade {
-			worstTrade = gain
-			worstInit = true
-		}
-
-		if t.Paper {
-			paperTrades++
-			if gain >= 0 {
-				paperWins++
-			}
-			paperPnL += gain
-		} else {
-			liveTrades++
-			if gain >= 0 {
-				liveWins++
-			}
-			livePnL += gain
-		}
-
-		bracket := priceBracket(t.Price)
-		bc := bracketMap[bracket]
-		if bc == nil {
-			bc = &bracketStat{Bracket: bracket}
-			bracketMap[bracket] = bc
-		}
-		bc.Trades++
-		if gain >= 0 {
-			bc.Wins++
-		}
-		bc.PnL += gain
+		mergeStat(agg.bracketMap, priceBracket(t.Price), func() *bracketStat {
+			return &bracketStat{Bracket: priceBracket(t.Price)}
+		}, won, gain)
 
 		ts := time.Unix(t.Ts, 0).UTC()
-		dowName := ts.Weekday().String()
-		dc := dowMap[dowName]
-		if dc == nil {
-			dc = &dowStat{Day: dowName}
-			dowMap[dowName] = dc
-		}
-		dc.Trades++
-		if gain >= 0 {
-			dc.Wins++
-		}
-		dc.PnL += gain
-
-		hourBracket := hourBracketStr(ts.Hour())
-		hc := hourMap[hourBracket]
-		if hc == nil {
-			hc = &hourStat{Hour: hourBracket}
-			hourMap[hourBracket] = hc
-		}
-		hc.Trades++
-		if gain >= 0 {
-			hc.Wins++
-		}
-		hc.PnL += gain
-
-		marketKey := t.MarketID
-		mc := marketMap[marketKey]
-		if mc == nil {
-			mc = &marketStat{Question: t.Question, Slug: t.Slug}
-			marketMap[marketKey] = mc
-		}
-		mc.Trades++
-		if gain >= 0 {
-			mc.Wins++
-		}
-		mc.PnL += gain
+		mergeStat(agg.dowMap, ts.Weekday().String(), func() *dowStat {
+			return &dowStat{Day: ts.Weekday().String()}
+		}, won, gain)
+		mergeStat(agg.hourMap, hourBracketStr(ts.Hour()), func() *hourStat {
+			return &hourStat{Hour: hourBracketStr(ts.Hour())}
+		}, won, gain)
+		mergeStat(agg.marketMap, t.MarketID, func() *marketStat {
+			return &marketStat{Question: t.Question, Slug: t.Slug}
+		}, won, gain)
 
 		stratKey := t.Strategy
 		if stratKey == "" {
 			stratKey = "copy_trading"
 		}
-		sc := strategyMap[stratKey]
+		sc := agg.strategyMap[stratKey]
 		if sc == nil {
 			sc = &strategyStat{Strategy: stratKey}
-			strategyMap[stratKey] = sc
+			agg.strategyMap[stratKey] = sc
 		}
 		sc.Trades++
 		sc.Invested += t.SizeUSDC
-		if gain >= 0 {
+		if won {
 			sc.Wins++
 		}
 		sc.PnL += gain
 
-		if t.SourceJSON != "" && t.SourceJSON != "[]" {
-			var sources []struct {
-				Address string  `json:"address"`
-				Name    string  `json:"name"`
-				Outcome string  `json:"outcome"`
-				Size    float64 `json:"size"`
-				Price   float64 `json:"price"`
-			}
-			if err := json.Unmarshal([]byte(t.SourceJSON), &sources); err == nil && len(sources) > 0 {
-				splitPnL := gain / float64(len(sources))
-				splitInv := t.SizeUSDC / float64(len(sources))
-				for _, s := range sources {
-					tc := traderMap[s.Address]
-					if tc == nil {
-						tc = &traderStat{Address: s.Address, Name: s.Name}
-						traderMap[s.Address] = tc
-					}
-					if tc.Name == "" && s.Name != "" {
-						tc.Name = s.Name
-					}
-					tc.Trades++
-					tc.Invested += splitInv
-					if gain >= 0 {
-						tc.Wins++
-					}
-					tc.PnL += splitPnL
-					if tc.Best == 0 || splitPnL > tc.Best {
-						tc.Best = splitPnL
-					}
-					if tc.Worst == 0 || splitPnL < tc.Worst {
-						tc.Worst = splitPnL
-					}
-				}
-			}
+		ingestTradeSources(agg, t, gain)
+	}
+}
+
+// bucket is the shared Trades/Wins/PnL shape every keyed stat accumulator
+// embeds by implementing count/pnl accessors through mergeStat's generics.
+type bucket interface {
+	countInc()
+	countWins()
+	addPnL(float64)
+}
+
+func (b *bracketStat) countInc()        { b.Trades++ }
+func (b *bracketStat) countWins()       { b.Wins++ }
+func (b *bracketStat) addPnL(v float64) { b.PnL += v }
+func (d *dowStat) countInc()            { d.Trades++ }
+func (d *dowStat) countWins()           { d.Wins++ }
+func (d *dowStat) addPnL(v float64)     { d.PnL += v }
+func (h *hourStat) countInc()           { h.Trades++ }
+func (h *hourStat) countWins()          { h.Wins++ }
+func (h *hourStat) addPnL(v float64)    { h.PnL += v }
+func (m *marketStat) countInc()         { m.Trades++ }
+func (m *marketStat) countWins()        { m.Wins++ }
+func (m *marketStat) addPnL(v float64)  { m.PnL += v }
+
+// mergeStat folds one trade into the keyed accumulator, creating the bucket on
+// first sight exactly like the original inline blocks.
+func mergeStat[V bucket](m map[string]V, key string, fresh func() V, won bool, gain float64) {
+	v, ok := m[key]
+	if !ok {
+		v = fresh()
+		m[key] = v
+	}
+	v.countInc()
+	if won {
+		v.countWins()
+	}
+	v.addPnL(gain)
+}
+
+// ingestTradeSources splits one copy-traded position's gain evenly across the
+// source wallets recorded in its SourceJSON payload.
+// tradeSource is one entry of a copy-trade's SourceJSON payload.
+type tradeSource struct {
+	Address string  `json:"address"`
+	Name    string  `json:"name"`
+	Outcome string  `json:"outcome"`
+	Size    float64 `json:"size"`
+	Price   float64 `json:"price"`
+}
+
+// parseTradeSources decodes SourceJSON, tolerating malformed payloads.
+func parseTradeSources(src string) []tradeSource {
+	if src == "" || src == "[]" {
+		return nil
+	}
+	var sources []tradeSource
+	if err := json.Unmarshal([]byte(src), &sources); err != nil {
+		return nil
+	}
+	return sources
+}
+
+func ingestTradeSources(agg *statsAgg, t TradeView, gain float64) {
+	sources := parseTradeSources(t.SourceJSON)
+	if len(sources) == 0 {
+		return
+	}
+	splitPnL := gain / float64(len(sources))
+	splitInv := t.SizeUSDC / float64(len(sources))
+	won := gain >= 0
+	for _, s := range sources {
+		tc := agg.traderMap[s.Address]
+		if tc == nil {
+			tc = &traderStat{Address: s.Address, Name: s.Name}
+			agg.traderMap[s.Address] = tc
 		}
+		if tc.Name == "" && s.Name != "" {
+			tc.Name = s.Name
+		}
+		tc.Trades++
+		tc.Invested += splitInv
+		if won {
+			tc.Wins++
+		}
+		tc.PnL += splitPnL
+		foldBestWorst(tc, splitPnL)
 	}
+}
 
-	totalSettled := winCount + lossCount
-	winRate := 0.0
-	if totalSettled > 0 {
-		winRate = float64(winCount) / float64(totalSettled) * 100
+// foldBestWorst keeps the per-trader best/worst split figures up to date.
+func foldBestWorst(tc *traderStat, splitPnL float64) {
+	if tc.Best == 0 || splitPnL > tc.Best {
+		tc.Best = splitPnL
 	}
-	avgGain := 0.0
-	if totalSettled > 0 {
-		avgGain = (totalRecovered - totalInvested) / float64(totalSettled)
+	if tc.Worst == 0 || splitPnL < tc.Worst {
+		tc.Worst = splitPnL
 	}
+}
 
-	data.PerfAvgWin = 0
-	if winCount > 0 {
-		data.PerfAvgWin = sumWinGain / float64(winCount)
+// observe tracks the running best/worst trade gains.
+func (tt *totals) observe(gain float64) {
+	if !tt.bestInit || gain > tt.best {
+		tt.best = gain
+		tt.bestInit = true
 	}
-	data.PerfAvgLoss = 0
-	if lossCount > 0 {
-		data.PerfAvgLoss = sumLossGain / float64(lossCount)
+	if !tt.worstInit || gain < tt.worst {
+		tt.worst = gain
+		tt.worstInit = true
 	}
-	data.PerfProfitFactor = 0
-	if sumLossGain < 0 {
-		data.PerfProfitFactor = sumWinGain / -sumLossGain
-	}
+}
 
-	data.PerfStreakWins = 0
-	data.PerfStreakLosses = 0
+// observeMode folds one trade into the paper or live counter set.
+func (agg *statsAgg) observeMode(paper, won bool, gain float64) {
+	trades, wins, pnl := &agg.liveTrades, &agg.liveWins, &agg.livePnL
+	if paper {
+		trades, wins, pnl = &agg.paperTrades, &agg.paperWins, &agg.paperPnL
+	}
+	*trades++
+	if won {
+		*wins++
+	}
+	*pnl += gain
+}
+
+// computePerfMetrics derives averages, profit factor and win/loss streaks.
+func computePerfMetrics(trades []TradeView, tt *totals) perfMetrics {
+	var c perfMetrics
+	if tt.wins > 0 {
+		c.avgWin = tt.sumWin / float64(tt.wins)
+	}
+	if tt.losses > 0 {
+		c.avgLoss = tt.sumLoss / float64(tt.losses)
+	}
+	if tt.sumLoss < 0 {
+		c.profitFactor = tt.sumWin / -tt.sumLoss
+	}
 	curWin, curLoss := 0, 0
 	for _, t := range trades {
-		gain := gainFromTrade(t)
-		if gain >= 0 {
+		if gainFromTrade(t) >= 0 {
 			curWin++
 			curLoss = 0
-			if curWin > data.PerfStreakWins {
-				data.PerfStreakWins = curWin
+			if curWin > c.maxWinStreak {
+				c.maxWinStreak = curWin
 			}
 		} else {
 			curLoss++
 			curWin = 0
-			if curLoss > data.PerfStreakLosses {
-				data.PerfStreakLosses = curLoss
+			if curLoss > c.maxLossStreak {
+				c.maxLossStreak = curLoss
 			}
 		}
 	}
+	return c
+}
 
-	overviewHTML := fmt.Sprintf(`
+// renderOverview builds the eight stat cards exactly as the old inline block.
+func renderOverview(tt *totals, c perfMetrics) template.HTML {
+	_ = c
+	totalSettled := tt.wins + tt.losses
+	winRate := 0.0
+	if totalSettled > 0 {
+		winRate = float64(tt.wins) / float64(totalSettled) * 100
+	}
+	avgGain := 0.0
+	if totalSettled > 0 {
+		avgGain = (tt.recovered - tt.invested) / float64(totalSettled)
+	}
+	return template.HTML(fmt.Sprintf(`
 <div class="stats-grid">
   <div class="stat-card"><div class="stat-label">Total Invested</div><div class="stat-val usd">$%.2f</div></div>
   <div class="stat-card"><div class="stat-label">Total Recovered</div><div class="stat-val usd">$%.2f</div></div>
@@ -1059,305 +1275,190 @@ func computeAndRenderStats(data *DashboardData) {
   <div class="stat-card"><div class="stat-label">Avg Gain/Trade</div><div class="stat-val %s">$%+.2f</div></div>
   <div class="stat-card"><div class="stat-label">Total Settled</div><div class="stat-val blue">%d</div></div>
 </div>`,
-		totalInvested, totalRecovered,
-		pnlClass(totalRecovered-totalInvested), totalRecovered-totalInvested,
-		pnlClass(float64(winCount-lossCount)), winCount, totalSettled, winRate,
-		bestTrade, worstTrade,
-		pnlClass(avgGain), avgGain, totalSettled)
-	data.StatsOverview = template.HTML(overviewHTML)
+		tt.invested, tt.recovered,
+		pnlClass(tt.recovered-tt.invested), tt.recovered-tt.invested,
+		pnlClass(float64(tt.wins-tt.losses)), tt.wins, totalSettled, winRate,
+		tt.best, tt.worst,
+		pnlClass(avgGain), avgGain, totalSettled))
+}
 
-	// ── Trader table ──
-	var traderList []*traderStat
-	for _, tc := range traderMap {
-		traderList = append(traderList, tc)
+// statsValues snapshots a stat map into a slice.
+func statsValues[V any](m map[string]V) []V {
+	out := make([]V, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
 	}
-	sort.Slice(traderList, func(i, j int) bool {
-		return traderList[i].PnL > traderList[j].PnL
-	})
-	if len(traderList) > 20 {
-		traderList = traderList[:20]
-	}
+	return out
+}
+
+// statsByPnL sorts a map's values by PnL desc and truncates to topN.
+func statsByPnL[V any](m map[string]V, pnl func(V) float64, topN int) []V {
+	return topByPnL(statsValues(m), pnl, topN)
+}
+
+// renderTraderTables renders the main trader rows and the detail sub-table.
+func renderTraderTables(traderList []*traderStat) (template.HTML, template.HTML) {
 	var traderSB strings.Builder
 	if len(traderList) == 0 {
 		traderSB.WriteString(`<tr><td colspan="7" class="empty">No source trader data</td></tr>`)
 	} else {
 		for _, tc := range traderList {
-			wr := 0.0
-			if tc.Trades > 0 {
-				wr = float64(tc.Wins) / float64(tc.Trades) * 100
-			}
-			pnlCls := "val-pos"
-			if tc.PnL < 0 {
-				pnlCls = "val-neg"
-			}
-			name := tc.Name
-			if name == "" {
-				name = tc.Address
-				if len(name) > 14 {
-					name = name[:6] + "\u2026" + name[len(name)-4:]
-				}
-			}
 			roi := 0.0
 			if tc.Invested > 0 {
 				roi = tc.PnL / tc.Invested * 100
 			}
 			traderSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num usd">$%.2f</td><td class="num %s">$%+.2f</td><td class="num">%.1f%%</td></tr>`,
-				name, tc.Trades, tc.Wins, wr, tc.Invested, pnlCls, tc.PnL, roi))
+				displayTraderName(tc), tc.Trades, tc.Wins, winRatePct(tc.Wins, tc.Trades), tc.Invested, pnlClassOf(tc.PnL), tc.PnL, roi))
 		}
 	}
-	data.TraderStatsRows = template.HTML(traderSB.String())
-
-	// ── Trader detail rows (for the trader detail sub-table) ──
 	var detailSB strings.Builder
 	if len(traderList) == 0 {
 		detailSB.WriteString(`<tr><td colspan="5" class="empty">No data</td></tr>`)
 	} else {
 		for _, tc := range traderList {
-			name := tc.Name
-			if name == "" {
-				name = tc.Address
-				if len(name) > 14 {
-					name = name[:6] + "\u2026" + name[len(name)-4:]
-				}
-			}
-			wr := 0.0
-			if tc.Trades > 0 {
-				wr = float64(tc.Wins) / float64(tc.Trades) * 100
-			}
-			pnlCls := "val-pos"
-			if tc.PnL < 0 {
-				pnlCls = "val-neg"
-			}
 			detailSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td><td class="num val-pos">$%+.2f</td></tr>`,
-				name, tc.Trades, wr, pnlCls, tc.PnL, tc.Best))
+				displayTraderName(tc), tc.Trades, winRatePct(tc.Wins, tc.Trades), pnlClassOf(tc.PnL), tc.PnL, tc.Best))
 		}
 	}
-	data.TraderDetailRows = template.HTML(detailSB.String())
+	return template.HTML(traderSB.String()), template.HTML(detailSB.String())
+}
 
-	// ── Price bracket table ──
-	bracketOrder := []string{"0.00-0.20", "0.20-0.40", "0.40-0.60", "0.60-0.80", "0.80-1.00"}
-	var priceSB strings.Builder
-	for _, br := range bracketOrder {
-		bc := bracketMap[br]
-		if bc == nil {
+// orderedRow formats one stats-table row from its precomputed cells.
+func orderedRow(label string, trades, wins int, pnl float64) string {
+	return fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+		label, trades, wins, winRatePct(wins, trades), pnlClassOf(pnl), pnl)
+}
+
+// statView adapts each concrete stat type to the shared ordered-row shape.
+type statView struct {
+	label  string
+	trades int
+	wins   int
+	pnl    float64
+}
+
+type statPoint interface {
+	view() statView
+}
+
+func (b *bracketStat) view() statView { return statView{b.Bracket, b.Trades, b.Wins, b.PnL} }
+func (d *dowStat) view() statView     { return statView{d.Day[:3], d.Trades, d.Wins, d.PnL} }
+func (h *hourStat) view() statView    { return statView{h.Hour, h.Trades, h.Wins, h.PnL} }
+
+func bracketRow(b *bracketStat) string { return orderedRow(b.Bracket, b.Trades, b.Wins, b.PnL) }
+func dowRow(d *dowStat) string         { return orderedRow(d.Day[:3], d.Trades, d.Wins, d.PnL) }
+func hourRow(h *hourStat) string       { return orderedRow(h.Hour, h.Trades, h.Wins, h.PnL) }
+
+func bracketChartLabel(b *bracketStat) string { return b.Bracket }
+func dowChartLabel(d *dowStat) string         { return d.Day[:3] }
+func hourChartLabel(h *hourStat) string       { return h.Hour }
+
+// renderOrderedRows walks the fixed key order, skipping absent buckets, and
+// renders each present bucket through rowFmt.
+func renderOrderedRows[V statPoint](m map[string]V, order []string, rowFmt func(V) string) template.HTML {
+	var sb strings.Builder
+	for _, k := range order {
+		v, ok := m[k]
+		if !ok {
 			continue
 		}
-		wr := 0.0
-		if bc.Trades > 0 {
-			wr = float64(bc.Wins) / float64(bc.Trades) * 100
-		}
-		pnlCls := "val-pos"
-		if bc.PnL < 0 {
-			pnlCls = "val-neg"
-		}
-		priceSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
-			br, bc.Trades, bc.Wins, wr, pnlCls, bc.PnL))
+		sb.WriteString(rowFmt(v))
 	}
-	data.PriceStatsRows = template.HTML(priceSB.String())
+	return template.HTML(sb.String())
+}
 
-	// ── Day of week table ──
-	dowOrder := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
-	var dowSB strings.Builder
-	for _, d := range dowOrder {
-		dc := dowMap[d]
-		if dc == nil {
+// renderOrderedChartSeries mirrors renderOrderedRows for Chart.js arrays.
+func renderOrderedChartSeries[V statPoint](m map[string]V, order []string, label func(V) string) (template.JS, template.JS) {
+	var labels, pnls []string
+	for _, k := range order {
+		v, ok := m[k]
+		if !ok {
 			continue
 		}
-		wr := 0.0
-		if dc.Trades > 0 {
-			wr = float64(dc.Wins) / float64(dc.Trades) * 100
-		}
-		pnlCls := "val-pos"
-		if dc.PnL < 0 {
-			pnlCls = "val-neg"
-		}
-		dowSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
-			d[:3], dc.Trades, dc.Wins, wr, pnlCls, dc.PnL))
+		labels = append(labels, fmt.Sprintf("%q", label(v)))
+		pnls = append(pnls, fmt.Sprintf("%.2f", v.view().pnl))
 	}
-	data.DowStatsRows = template.HTML(dowSB.String())
+	return jsArray(labels), jsArray(pnls)
+}
 
-	// ── Hour table ──
-	hourOrder := []string{"00-03", "04-07", "08-11", "12-15", "16-19", "20-23"}
-	var hourSB strings.Builder
-	for _, h := range hourOrder {
-		hc := hourMap[h]
-		if hc == nil {
-			continue
-		}
-		wr := 0.0
-		if hc.Trades > 0 {
-			wr = float64(hc.Wins) / float64(hc.Trades) * 100
-		}
-		pnlCls := "val-pos"
-		if hc.PnL < 0 {
-			pnlCls = "val-neg"
-		}
-		hourSB.WriteString(fmt.Sprintf(`<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
-			h, hc.Trades, hc.Wins, wr, pnlCls, hc.PnL))
-	}
-	data.HourStatsRows = template.HTML(hourSB.String())
+// jsArray serialises a string slice as a JS array literal ("[]" when empty).
+func jsArray(items []string) template.JS {
+	return template.JS("[" + strings.Join(items, ",") + "]")
+}
 
-	// ── Market table ──
-	var marketList []*marketStat
-	for _, mc := range marketMap {
-		marketList = append(marketList, mc)
-	}
-	sort.Slice(marketList, func(i, j int) bool {
-		return marketList[i].PnL > marketList[j].PnL
-	})
-	if len(marketList) > 30 {
-		marketList = marketList[:30]
-	}
-	var marketSB strings.Builder
+// renderMarketTable renders the top-30 markets table rows.
+func renderMarketTable(marketList []*marketStat) template.HTML {
+	var sb strings.Builder
 	for _, mc := range marketList {
-		wr := 0.0
-		if mc.Trades > 0 {
-			wr = float64(mc.Wins) / float64(mc.Trades) * 100
-		}
-		pnlCls := "val-pos"
-		if mc.PnL < 0 {
-			pnlCls = "val-neg"
-		}
 		label := mc.Question
 		if len(label) > 50 {
-			label = label[:50] + "\u2026"
+			label = label[:50] + ellipsis
 		}
-		marketSB.WriteString(fmt.Sprintf(`<tr><td class="mkt-cell">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
-			label, mc.Trades, mc.Wins, wr, pnlCls, mc.PnL))
+		sb.WriteString(fmt.Sprintf(`<tr><td class="mkt-cell">%s</td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
+			label, mc.Trades, mc.Wins, winRatePct(mc.Wins, mc.Trades), pnlClassOf(mc.PnL), mc.PnL))
 	}
-	data.MarketStatsRows = template.HTML(marketSB.String())
+	return template.HTML(sb.String())
+}
 
-	var strategyList []*strategyStat
-	for _, sc := range strategyMap {
-		strategyList = append(strategyList, sc)
-	}
-	sort.Slice(strategyList, func(i, j int) bool {
-		return strategyList[i].PnL > strategyList[j].PnL
-	})
-	var stratSB strings.Builder
+// renderStrategyTable renders every strategy row, best PnL first.
+func renderStrategyTable(strategyList []*strategyStat) template.HTML {
+	var sb strings.Builder
 	if len(strategyList) == 0 {
-		stratSB.WriteString(`<tr><td colspan="5" class="empty">No strategy data</td></tr>`)
+		sb.WriteString(`<tr><td colspan="5" class="empty">No strategy data</td></tr>`)
 	} else {
 		for _, sc := range strategyList {
-			wr := 0.0
-			if sc.Trades > 0 {
-				wr = float64(sc.Wins) / float64(sc.Trades) * 100
-			}
-			pnlCls := "val-pos"
-			if sc.PnL < 0 {
-				pnlCls = "val-neg"
-			}
 			displayName := sc.Strategy
 			if displayName == "" {
 				displayName = "unknown"
 			}
-			stratSB.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num usd">$%.2f</td><td class="num %s">$%+.2f</td></tr>`,
-				displayName, sc.Trades, wr, sc.Invested, pnlCls, sc.PnL))
+			sb.WriteString(fmt.Sprintf(`<tr><td class="src-name">%s</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num usd">$%.2f</td><td class="num %s">$%+.2f</td></tr>`,
+				displayName, sc.Trades, winRatePct(sc.Wins, sc.Trades), sc.Invested, pnlClassOf(sc.PnL), sc.PnL))
 		}
 	}
-	data.StrategyStatsRows = template.HTML(stratSB.String())
+	return template.HTML(sb.String())
+}
 
-	// ── Paper vs Live ──
-	paperWr := 0.0
-	if paperTrades > 0 {
-		paperWr = float64(paperWins) / float64(paperTrades) * 100
-	}
-	liveWr := 0.0
-	if liveTrades > 0 {
-		liveWr = float64(liveWins) / float64(liveTrades) * 100
-	}
-	paperPnLCls := "val-pos"
-	if paperPnL < 0 {
-		paperPnLCls = "val-neg"
-	}
-	livePnLCls := "val-pos"
-	if livePnL < 0 {
-		livePnLCls = "val-neg"
-	}
-	data.PaperLiveStatsRow = template.HTML(fmt.Sprintf(`
+// renderPaperLiveRow renders the two paper/live comparison rows.
+func renderPaperLiveRow(agg *statsAgg) template.HTML {
+	return template.HTML(fmt.Sprintf(`
 <tr><td><span class="mode-paper">PAPER</span></td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>
 <tr><td><span class="mode-live">LIVE</span></td><td class="num">%d</td><td class="num">%d</td><td class="num">%.1f%%</td><td class="num %s">$%+.2f</td></tr>`,
-		paperTrades, paperWins, paperWr, paperPnLCls, paperPnL,
-		liveTrades, liveWins, liveWr, livePnLCls, livePnL))
+		agg.paperTrades, agg.paperWins, winRatePct(agg.paperWins, agg.paperTrades), pnlClassOf(agg.paperPnL), agg.paperPnL,
+		agg.liveTrades, agg.liveWins, winRatePct(agg.liveWins, agg.liveTrades), pnlClassOf(agg.livePnL), agg.livePnL))
+}
 
-	// ── Chart.js JSON data ──
-
-	// PnL timeline from snapshots
-	if len(data.SnapshotsReversed) > 0 {
-		var labels, values []string
-		for _, s := range data.SnapshotsReversed {
-			labels = append(labels, s.DateShort)
-			values = append(values, fmt.Sprintf("%.2f", s.Realized))
-		}
-		data.PnLTimelineLabels = template.JS("[" + strings.Join(mapQuoted(labels), ",") + "]")
-		data.PnLTimelineData = template.JS("[" + strings.Join(values, ",") + "]")
-	} else {
-		data.PnLTimelineLabels = template.JS("[]")
-		data.PnLTimelineData = template.JS("[]")
+// renderSnapshotTimeline builds the realized-PnL timeline chart arrays.
+func renderSnapshotTimeline(snapshots []SnapshotView) (template.JS, template.JS) {
+	if len(snapshots) == 0 {
+		return template.JS("[]"), template.JS("[]")
 	}
-
-	// Trader chart
-	if len(traderList) > 0 {
-		var names, pnls, wins []string
-		for _, tc := range traderList {
-			n := tc.Name
-			if n == "" {
-				n = "0x" + tc.Address[:min(6, len(tc.Address))]
-			}
-			names = append(names, fmt.Sprintf("%q", n))
-			pnls = append(pnls, fmt.Sprintf("%.2f", tc.PnL))
-			wins = append(wins, fmt.Sprintf("%d", tc.Wins))
-		}
-		data.TraderChartLabels = template.JS("[" + strings.Join(names, ",") + "]")
-		data.TraderChartPnL = template.JS("[" + strings.Join(pnls, ",") + "]")
-		data.TraderChartWins = template.JS("[" + strings.Join(wins, ",") + "]")
-	} else {
-		data.TraderChartLabels = template.JS("[]")
-		data.TraderChartPnL = template.JS("[]")
-		data.TraderChartWins = template.JS("[]")
+	var labels, values []string
+	for _, s := range snapshots {
+		labels = append(labels, s.DateShort)
+		values = append(values, fmt.Sprintf("%.2f", s.Realized))
 	}
+	return template.JS("[" + strings.Join(mapQuoted(labels), ",") + "]"),
+		template.JS("[" + strings.Join(values, ",") + "]")
+}
 
-	// Price bracket chart
-	var priceLabels, pricePnLs []string
-	for _, br := range bracketOrder {
-		bc := bracketMap[br]
-		if bc == nil {
-			continue
-		}
-		priceLabels = append(priceLabels, fmt.Sprintf("%q", br))
-		pricePnLs = append(pricePnLs, fmt.Sprintf("%.2f", bc.PnL))
+// renderTraderChart builds the trader PnL/wins chart arrays.
+func renderTraderChart(traderList []*traderStat) (template.JS, template.JS, template.JS) {
+	if len(traderList) == 0 {
+		return template.JS("[]"), template.JS("[]"), template.JS("[]")
 	}
-	data.PriceChartLabels = template.JS("[" + strings.Join(priceLabels, ",") + "]")
-	data.PriceChartPnL = template.JS("[" + strings.Join(pricePnLs, ",") + "]")
-
-	// DOW chart
-	var dowLabels, dowPnLs []string
-	for _, d := range dowOrder {
-		dc := dowMap[d]
-		if dc == nil {
-			continue
+	var names, pnls, wins []string
+	for _, tc := range traderList {
+		n := tc.Name
+		if n == "" {
+			n = "0x" + tc.Address[:min(6, len(tc.Address))]
 		}
-		dowLabels = append(dowLabels, fmt.Sprintf("%q", d[:3]))
-		dowPnLs = append(dowPnLs, fmt.Sprintf("%.2f", dc.PnL))
+		names = append(names, fmt.Sprintf("%q", n))
+		pnls = append(pnls, fmt.Sprintf("%.2f", tc.PnL))
+		wins = append(wins, fmt.Sprintf("%d", tc.Wins))
 	}
-	data.DowChartLabels = template.JS("[" + strings.Join(dowLabels, ",") + "]")
-	data.DowChartPnL = template.JS("[" + strings.Join(dowPnLs, ",") + "]")
-
-	// Hour chart
-	var hourLabels, hourPnLs []string
-	for _, h := range hourOrder {
-		hc := hourMap[h]
-		if hc == nil {
-			continue
-		}
-		hourLabels = append(hourLabels, fmt.Sprintf("%q", h))
-		hourPnLs = append(hourPnLs, fmt.Sprintf("%.2f", hc.PnL))
-	}
-	data.HourChartLabels = template.JS("[" + strings.Join(hourLabels, ",") + "]")
-	data.HourChartPnL = template.JS("[" + strings.Join(hourPnLs, ",") + "]")
-
-	// Win/Loss doughnut
-	data.WinLossData = template.JS(fmt.Sprintf("[%d,%d]", winCount, lossCount))
+	return template.JS("[" + strings.Join(names, ",") + "]"),
+		template.JS("[" + strings.Join(pnls, ",") + "]"),
+		template.JS("[" + strings.Join(wins, ",") + "]")
 }
 
 func mapQuoted(s []string) []string {
@@ -1577,7 +1678,7 @@ func Serve(port int, dbPath string, cfgPath string) {
 			}
 			html = buf.Bytes()
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set(headerContentType, "text/html; charset=utf-8")
 		w.Write(html)
 	})
 
@@ -1596,7 +1697,7 @@ func Serve(port int, dbPath string, cfgPath string) {
 			data := query(dbPath, strategy)
 			csv = buildCSV(data)
 		}
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set(headerContentType, "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", "attachment; filename=vagustrader_trades.csv")
 		w.Write(csv)
 	})
@@ -1618,7 +1719,7 @@ func Serve(port int, dbPath string, cfgPath string) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerContentType, "application/json")
 		json.NewEncoder(w).Encode(diags)
 	})
 

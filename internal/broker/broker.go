@@ -34,13 +34,13 @@ type marketCacheEntry struct {
 }
 
 type Broker struct {
-	clob        clob.Client
-	dataAPI     *dataapi.Client
-	gamma       *gamma.Client
-	database    *db.DB
-	config      *cfg.AppConfig
-	paper       bool
-	notifier    *notify.Notifier
+	clob     clob.Client
+	dataAPI  *dataapi.Client
+	gamma    *gamma.Client
+	database *db.DB
+	config   *cfg.AppConfig
+	paper    bool
+	notifier *notify.Notifier
 
 	// tradingWallet is the address that actually owns positions/fills:
 	// the POLY_1271 deposit/proxy wallet in live mode, else the signer EOA.
@@ -73,11 +73,11 @@ func New(
 }
 
 func (b *Broker) GetDataAPI() *dataapi.Client   { return b.dataAPI }
-func (b *Broker) GetGamma() *gamma.Client        { return b.gamma }
-func (b *Broker) GetConfig() *cfg.AppConfig      { return b.config }
-func (b *Broker) IsPaper() bool                  { return b.paper }
-func (b *Broker) GetNotifier() *notify.Notifier   { return b.notifier }
-func (b *Broker) GetDatabase() *db.DB             { return b.database }
+func (b *Broker) GetGamma() *gamma.Client       { return b.gamma }
+func (b *Broker) GetConfig() *cfg.AppConfig     { return b.config }
+func (b *Broker) IsPaper() bool                 { return b.paper }
+func (b *Broker) GetNotifier() *notify.Notifier { return b.notifier }
+func (b *Broker) GetDatabase() *db.DB           { return b.database }
 
 // SetTradingWallet records the wallet that owns live fills (proxy/deposit
 // wallet) so order verification can query the public data-api.

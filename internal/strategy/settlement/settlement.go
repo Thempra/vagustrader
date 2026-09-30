@@ -64,6 +64,57 @@ func (s *SettlementStrategy) tick(b *broker.Broker) error {
 	return nil
 }
 
+// backfillQuestion recovers a human-readable question for a settled market:
+// first from the CLOB payload (persisting it as market meta), then falling
+// back to a truncated token ID.
+func backfillQuestion(b *broker.Broker, marketID, tokenID, question, slug string, clobData map[string]interface{}) (string, string, error) {
+	if question == "" {
+		if q, ok := clobData["question"].(string); ok && q != "" {
+			question = q
+			slug, _ = clobData["slug"].(string)
+			if err := b.UpsertMarketMeta(&db.MarketMeta{
+				ConditionID: marketID,
+				Question:    question,
+				Slug:        slug,
+			}); err != nil {
+				return question, slug, fmt.Errorf("upsert market meta: %w", err)
+			}
+		}
+	}
+	if question == "" {
+		tid := tokenID
+		if len(tid) > 20 {
+			tid = tid[:20]
+		}
+		question = tid + "..."
+	}
+	return question, slug, nil
+}
+
+// applySettlement records the settlement in the bot books: trades, position
+// removal, wallet credit (paper only) and the PnL snapshot.
+func applySettlement(b *broker.Broker, tokenID, strategy string, finalPrice, recoveredAmount, pnl float64) error {
+	if err := b.SettleTradesByStrategy(tokenID, strategy, finalPrice); err != nil {
+		return fmt.Errorf("settle trades by strategy: %w", err)
+	}
+	if b.IsPaper() {
+		if err := b.DeletePositionStrategy(tokenID, strategy); err != nil {
+			return fmt.Errorf("delete position: %w", err)
+		}
+		if err := b.CreditWallet(strategy, recoveredAmount); err != nil {
+			slog.Error("credit wallet", "strategy", strategy, "error", err)
+		}
+	} else {
+		if err := b.DeletePosition(tokenID); err != nil {
+			return fmt.Errorf("delete position: %w", err)
+		}
+	}
+	if err := updateSnapshot(b, pnl, strategy); err != nil {
+		return fmt.Errorf("update snapshot: %w", err)
+	}
+	return nil
+}
+
 func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) error {
 	tokenID := pos.TokenID
 	marketID := pos.MarketID
@@ -95,25 +146,9 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 	if err != nil {
 		return fmt.Errorf("get market meta: %w", err)
 	}
-	if question == "" {
-		if q, ok := clobData["question"].(string); ok && q != "" {
-			question = q
-			slug, _ = clobData["slug"].(string)
-			if err := b.UpsertMarketMeta(&db.MarketMeta{
-				ConditionID: marketID,
-				Question:    question,
-				Slug:        slug,
-			}); err != nil {
-				return fmt.Errorf("upsert market meta: %w", err)
-			}
-		}
-	}
-	if question == "" {
-		tid := tokenID
-		if len(tid) > 20 {
-			tid = tid[:20]
-		}
-		question = tid + "..."
+	question, slug, err = backfillQuestion(b, marketID, tokenID, question, slug, clobData)
+	if err != nil {
+		return err
 	}
 
 	if !b.IsPaper() {
@@ -135,27 +170,22 @@ func (s *SettlementStrategy) checkPosition(b *broker.Broker, pos *db.Position) e
 		"paper", paperTag,
 	)
 
-	if err := b.SettleTradesByStrategy(tokenID, strategy, finalPrice); err != nil {
-		return fmt.Errorf("settle trades by strategy: %w", err)
-	}
-	if b.IsPaper() {
-		if err := b.DeletePositionStrategy(tokenID, strategy); err != nil {
-			return fmt.Errorf("delete position: %w", err)
-		}
-		if err := b.CreditWallet(strategy, recoveredAmount); err != nil {
-			slog.Error("credit wallet", "strategy", strategy, "error", err)
-		}
-	} else {
-		if err := b.DeletePosition(tokenID); err != nil {
-			return fmt.Errorf("delete position: %w", err)
-		}
-	}
-	if err := updateSnapshot(b, pnl, strategy); err != nil {
-		return fmt.Errorf("update snapshot: %w", err)
+	if err := applySettlement(b, tokenID, strategy, finalPrice, recoveredAmount, pnl); err != nil {
+		return err
 	}
 
 	if b.GetNotifier() != nil {
-		sendNotification(b.GetNotifier(), question, slug, outcome, finalPrice, avgPrice, shares, pnl, b.IsPaper(), strategy)
+		b.GetNotifier().Send(settlementMessage(settlementResult{
+			Question:   question,
+			Slug:       slug,
+			Outcome:    outcome,
+			FinalPrice: finalPrice,
+			AvgPrice:   avgPrice,
+			Shares:     shares,
+			PnL:        pnl,
+			Paper:      b.IsPaper(),
+			Strategy:   strategy,
+		}))
 	}
 
 	return nil
@@ -203,35 +233,48 @@ func updateSnapshot(b *broker.Broker, pnl float64, strategy string) error {
 	})
 }
 
-func sendNotification(n interface{ Send(string) }, question, slug, outcome string, finalPrice, avgPrice, shares, pnl float64, paper bool, strategy string) {
+// settlementResult carries everything needed to render the settlement
+// notification for one closed position.
+type settlementResult struct {
+	Question   string
+	Slug       string
+	Outcome    string
+	FinalPrice float64
+	AvgPrice   float64
+	Shares     float64
+	PnL        float64
+	Paper      bool
+	Strategy   string
+}
+
+func settlementMessage(r settlementResult) string {
 	result := "✅ WIN"
-	if pnl < 0 {
+	if r.PnL < 0 {
 		result = "❌ LOSS"
 	}
 
 	mode := "💰 LIVE"
-	if paper {
+	if r.Paper {
 		mode = "📄 PAPER"
 	}
 
 	wonLost := "Lost ✗"
-	if finalPrice == 1.0 {
+	if r.FinalPrice == 1.0 {
 		wonLost = "Won ✓"
 	}
 
 	var urlLine string
-	if slug != "" {
+	if r.Slug != "" {
 		urlLine = fmt.Sprintf(
 			"\n🔗 https://polymarket.com/market/%s",
-			slug,
+			r.Slug,
 		)
 	}
 
-	msg := fmt.Sprintf(
+	return fmt.Sprintf(
 		"%s — Position settled %s\n📊 %s\n📋 Strategy: %s\n-> Held: %s → %s\n-> Entry: %.3f  |  Shares: %.2f  |  P&L: $%.2f%s",
-		mode, result, trunc(question, 80), strategy, outcome, wonLost, avgPrice, shares, pnl, urlLine,
+		mode, result, trunc(r.Question, 80), r.Strategy, r.Outcome, wonLost, r.AvgPrice, r.Shares, r.PnL, urlLine,
 	)
-	n.Send(msg)
 }
 
 func trunc(s string, n int) string {
