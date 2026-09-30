@@ -7,10 +7,12 @@ COPY . .
 RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o vagustrader ./cmd/vagustrader
 
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S vagus && adduser -S -G vagus vagus
 COPY --from=build /app/vagustrader /usr/local/bin/
 COPY config.yml /app/config.yml
 COPY config.live.yml /app/config.live.yml
 WORKDIR /app
-RUN mkdir -p data logs
+RUN mkdir -p data logs && chown -R vagus:vagus /app
+USER vagus
 CMD ["vagustrader", "run", "--paper"]

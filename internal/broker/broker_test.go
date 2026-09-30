@@ -162,8 +162,8 @@ func TestBuy_MaxDaysToEnd(t *testing.T) {
 		}
 	}
 
-	near := time.Now().Add(24 * 12 * time.Hour).UTC().Format(time.RFC3339)  // 12 days
-	far := time.Now().Add(24 * 200 * time.Hour).UTC().Format(time.RFC3339)  // ~200 days
+	near := time.Now().Add(24 * 12 * time.Hour).UTC().Format(time.RFC3339) // 12 days
+	far := time.Now().Add(24 * 200 * time.Hour).UTC().Format(time.RFC3339) // ~200 days
 
 	// far-dated market rejected
 	b := newBroker(7)

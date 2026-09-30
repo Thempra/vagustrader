@@ -3,7 +3,7 @@
     var table=document.getElementById(tableId);if(!table)return;
     var cols=table.querySelectorAll('colgroup col');
     var saved=localStorage.getItem('colw_'+tableId);
-    if(saved){try{var w=JSON.parse(saved);w.forEach(function(v,i){if(cols[i])cols[i].style.width=v+'px';});}catch(e){}}
+    if(saved){try{var w=JSON.parse(saved);w.forEach(function(v,i){if(cols[i])cols[i].style.width=v+'px';});}catch(e){/* corrupted localStorage entry: ignore and use default widths */}}
     var handles=table.querySelectorAll('.resize-handle');
     var dragCol=null,startX=0,startW=0;
     handles.forEach(function(h,i){
@@ -30,7 +30,7 @@
   initResize('tbl-pos');initResize('tbl-bal');
   (function(){
     var vd=document.getElementById('vdivider');if(!vd)return;
-    var left=vd.previousElementSibling,right=vd.nextElementSibling;
+    var left=vd.previousElementSibling;
     var main=vd.parentElement,saved=localStorage.getItem('panelSplit');
     if(saved){left.style.flex='0 0 '+saved+'%';}
     var dragging=false,startX=0,startW=0;
@@ -63,7 +63,7 @@
       system:document.getElementById('view-system')
     };
     function switchView(name){
-      items.forEach(function(el){el.classList.toggle('active',el.getAttribute('data-view')===name);});
+      items.forEach(function(el){el.classList.toggle('active',el.dataset.view===name);});
       Object.keys(views).forEach(function(k){
         var v=views[k];
         if(k===name){v.style.display='flex';}else{v.style.display='none';}
@@ -71,7 +71,7 @@
       localStorage.setItem('sidebarView',name);
     }
     items.forEach(function(el){
-      el.addEventListener('click',function(){switchView(el.getAttribute('data-view'));sidebar.classList.remove('open');});
+      el.addEventListener('click',function(){switchView(el.dataset.view);sidebar.classList.remove('open');});
     });
     var savedView=localStorage.getItem('sidebarView');
     if(savedView&&views[savedView]){switchView(savedView);}
@@ -89,7 +89,7 @@ var cd=typeof _cd!=='undefined'?_cd:null;
 function initCharts(){
   if(!cd)return;
 
-  if(cd.pnlLabels&&cd.pnlLabels.length){
+  if(cd.pnlLabels?.length){
     new Chart(document.getElementById('chart-timeline'),{
       type:'line',
       data:{labels:cd.pnlLabels,datasets:[{label:'Realized P&L',data:cd.pnlData,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.1)',fill:true,tension:0.3,pointRadius:3,pointBackgroundColor:'#3b82f6'}]},
@@ -97,7 +97,7 @@ function initCharts(){
     });
   }
 
-  if(cd.trLabels&&cd.trLabels.length){
+  if(cd.trLabels?.length){
     new Chart(document.getElementById('chart-traders'),{
       type:'bar',
       data:{labels:cd.trLabels,datasets:[{label:'P&L',data:cd.trPnL,backgroundColor:cd.trPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},
@@ -105,7 +105,7 @@ function initCharts(){
     });
   }
 
-  if(cd.wlData&&cd.wlData.length){
+  if(cd.wlData?.length){
     new Chart(document.getElementById('chart-winloss'),{
       type:'doughnut',
       data:{labels:['Wins','Losses'],datasets:[{data:cd.wlData,backgroundColor:['#22c55e','#ef4444'],borderWidth:0}]},
@@ -113,7 +113,7 @@ function initCharts(){
     });
   }
 
-  if(cd.prLabels&&cd.prLabels.length){
+  if(cd.prLabels?.length){
     new Chart(document.getElementById('chart-pricerange'),{
       type:'bar',
       data:{labels:cd.prLabels,datasets:[{label:'P&L',data:cd.prPnL,backgroundColor:cd.prPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},
@@ -121,7 +121,7 @@ function initCharts(){
     });
   }
 
-  if(cd.dowLabels&&cd.dowLabels.length){
+  if(cd.dowLabels?.length){
     new Chart(document.getElementById('chart-dow'),{
       type:'bar',
       data:{labels:cd.dowLabels,datasets:[{label:'P&L',data:cd.dowPnL,backgroundColor:'#3b82f6',borderRadius:3}]},
@@ -129,7 +129,7 @@ function initCharts(){
     });
   }
 
-  if(cd.hourLabels&&cd.hourLabels.length){
+  if(cd.hourLabels?.length){
     new Chart(document.getElementById('chart-hourly'),{
       type:'bar',
       data:{labels:cd.hourLabels,datasets:[{label:'P&L',data:cd.hourPnL,backgroundColor:cd.hourPnL.map(function(v){return v>=0?'#22c55e':'#ef4444';}),borderRadius:3}]},

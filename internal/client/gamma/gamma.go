@@ -176,44 +176,9 @@ func parseMarket(raw json.RawMessage) (*Market, error) {
 		return nil, err
 	}
 
-	getStr := func(key string) string {
-		if v, ok := obj[key]; ok {
-			var s string
-			if json.Unmarshal(v, &s) == nil {
-				return s
-			}
-		}
-		return ""
-	}
-
-	getFloat := func(key string) float64 {
-		if v, ok := obj[key]; ok {
-			var f float64
-			if json.Unmarshal(v, &f) == nil {
-				return f
-			}
-			var s string
-			if json.Unmarshal(v, &s) == nil {
-				f, _ = strconv.ParseFloat(s, 64)
-				return f
-			}
-		}
-		return 0
-	}
-
-	getBool := func(key string) bool {
-		if v, ok := obj[key]; ok {
-			var b bool
-			if json.Unmarshal(v, &b) == nil {
-				return b
-			}
-		}
-		return false
-	}
-
-	conditionID := getStr("conditionId")
+	conditionID := jsonStr(obj, "conditionId")
 	if conditionID == "" {
-		conditionID = getStr("id")
+		conditionID = jsonStr(obj, "id")
 	}
 
 	outcomes := parseStringArray(obj["outcomes"])
@@ -227,18 +192,63 @@ func parseMarket(raw json.RawMessage) (*Market, error) {
 	tokenIDs := parseTokenIDs(obj["clobTokenIds"])
 
 	return &Market{
-		ID:            getStr("id"),
-		Question:      getStr("question"),
+		ID:            jsonStr(obj, "id"),
+		Question:      jsonStr(obj, "question"),
 		Outcomes:      outcomes,
 		OutcomePrices: outcomePrices,
 		TokenIDs:      tokenIDs,
-		Volume:        getFloat("volume"),
-		Liquidity:     getFloat("liquidity"),
-		Active:        getBool("active"),
-		EndDate:       getStr("endDate"),
+		Volume:        jsonFloat(obj, "volume"),
+		Liquidity:     jsonFloat(obj, "liquidity"),
+		Active:        jsonBool(obj, "active"),
+		EndDate:       jsonStr(obj, "endDate"),
 		ConditionID:   conditionID,
-		Slug:          getStr("slug"),
+		Slug:          jsonStr(obj, "slug"),
 	}, nil
+}
+
+// jsonStr reads obj[key] as a string, returning "" when missing or unparseable.
+func jsonStr(obj map[string]json.RawMessage, key string) string {
+	v, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		return s
+	}
+	return ""
+}
+
+// jsonFloat reads obj[key] as a number, accepting a numeric or a quoted
+// string encoding; returns 0 when missing or unparseable.
+func jsonFloat(obj map[string]json.RawMessage, key string) float64 {
+	v, ok := obj[key]
+	if !ok {
+		return 0
+	}
+	var f float64
+	if json.Unmarshal(v, &f) == nil {
+		return f
+	}
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		f, _ = strconv.ParseFloat(s, 64)
+		return f
+	}
+	return 0
+}
+
+// jsonBool reads obj[key] as a bool, returning false when missing or unparseable.
+func jsonBool(obj map[string]json.RawMessage, key string) bool {
+	v, ok := obj[key]
+	if !ok {
+		return false
+	}
+	var b bool
+	if json.Unmarshal(v, &b) == nil {
+		return b
+	}
+	return false
 }
 
 func parseStringArray(raw json.RawMessage) []string {
