@@ -21,7 +21,7 @@ body{display:flex;flex-direction:row;gap:0}
 .kpi-sep{width:1px;height:28px;background:var(--border);margin:0 4px}
 .clock{margin-left:auto;font-size:11px;color:var(--dim)}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
-th{position:sticky;top:0;background:var(--bg3);padding:5px 8px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;text-align:left;font-weight:600;border-bottom:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;position:relative}
+th{top:0;background:var(--bg3);padding:5px 8px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;text-align:left;font-weight:600;border-bottom:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;position:relative}
 td{padding:4px 8px;border-bottom:1px solid var(--border);white-space:nowrap;vertical-align:middle;overflow:hidden;text-overflow:ellipsis}
 tr:hover td{background:var(--bg3)}
 td.num{text-align:right;font-variant-numeric:tabular-nums}

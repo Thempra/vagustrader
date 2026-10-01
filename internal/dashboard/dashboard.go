@@ -1654,53 +1654,8 @@ func Serve(port int, dbPath string, cfgPath string) {
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		fs.ServeHTTP(w, r)
 	}))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
-
-		cacheMu.RLock()
-		c := stratCache[strategy]
-		cacheMu.RUnlock()
-
-		var html []byte
-		if c != nil {
-			html = c.html
-		}
-		if len(html) == 0 {
-			data := query(dbPath, strategy)
-			var buf bytes.Buffer
-			if err := tmpl.Execute(&buf, data); err != nil {
-				http.Error(w, "render error", http.StatusInternalServerError)
-				return
-			}
-			html = buf.Bytes()
-		}
-		w.Header().Set(headerContentType, "text/html; charset=utf-8")
-		w.Write(html)
-	})
-
-	http.HandleFunc("/csv", func(w http.ResponseWriter, r *http.Request) {
-		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
-
-		cacheMu.RLock()
-		c := stratCache[strategy]
-		cacheMu.RUnlock()
-
-		var csv []byte
-		if c != nil {
-			csv = c.csvData
-		}
-		if len(csv) == 0 {
-			data := query(dbPath, strategy)
-			csv = buildCSV(data)
-		}
-		w.Header().Set(headerContentType, "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", "attachment; filename=vagustrader_trades.csv")
-		w.Write(csv)
-	})
+	http.HandleFunc("/", makeIndexHandler(dbPath, tmpl))
+	http.HandleFunc("/csv", makeCSVHandler(dbPath))
 
 	http.HandleFunc("/api/diagnostics", func(w http.ResponseWriter, r *http.Request) {
 		strategy := r.URL.Query().Get("strategy")
@@ -1727,5 +1682,60 @@ func Serve(port int, dbPath string, cfgPath string) {
 	log.Printf("Dashboard → http://localhost:%d", port)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("dashboard: serve: %v", err)
+	}
+}
+
+// makeIndexHandler serves the dashboard page from the pre-warmed cache,
+// falling back to a fresh query+render, exactly as the inline handler did.
+func makeIndexHandler(dbPath string, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
+
+		cacheMu.RLock()
+		c := stratCache[strategy]
+		cacheMu.RUnlock()
+
+		var html []byte
+		if c != nil {
+			html = c.html
+		}
+		if len(html) == 0 {
+			data := query(dbPath, strategy)
+			var buf bytes.Buffer
+			if err := tmpl.Execute(&buf, data); err != nil {
+				http.Error(w, "render error", http.StatusInternalServerError)
+				return
+			}
+			html = buf.Bytes()
+		}
+		w.Header().Set(headerContentType, "text/html; charset=utf-8")
+		w.Write(html)
+	}
+}
+
+// makeCSVHandler serves the trades CSV, cache-first like the page handler.
+func makeCSVHandler(dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		strategy := resolveStrategy(r.URL.Query().Get("strategy"))
+
+		cacheMu.RLock()
+		c := stratCache[strategy]
+		cacheMu.RUnlock()
+
+		var csv []byte
+		if c != nil {
+			csv = c.csvData
+		}
+		if len(csv) == 0 {
+			data := query(dbPath, strategy)
+			csv = buildCSV(data)
+		}
+		w.Header().Set(headerContentType, "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename=vagustrader_trades.csv")
+		w.Write(csv)
 	}
 }
