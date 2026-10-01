@@ -86,7 +86,7 @@ func (s *DeepValueStrategy) tick(ctx context.Context, b *broker.Broker) error {
 	}
 
 	var stats dvStats
-	now := time.Now().Unix()
+	env := dvCtx{ctx: ctx, b: b, held: held, config: config, risk: risk, now: time.Now().Unix()}
 
 	for _, m := range markets {
 		if len(m.Outcomes) < 2 || len(m.OutcomePrices) < 2 || len(m.TokenIDs) < 2 {
@@ -101,7 +101,7 @@ func (s *DeepValueStrategy) tick(ctx context.Context, b *broker.Broker) error {
 
 		stats.scanned++
 
-		stop, err := s.scanOutcomes(ctx, b, m, held, config, risk, now, &stats)
+		stop, err := s.scanOutcomes(m, env, &stats)
 		if err != nil {
 			return err
 		}
@@ -144,10 +144,20 @@ func (st *dvStats) recordSkip(kind dvSkipKind) {
 	}
 }
 
+// dvCtx bundles the per-tick environment shared by the outcome scan helpers.
+type dvCtx struct {
+	ctx    context.Context
+	b      *broker.Broker
+	held   map[string]struct{}
+	config cfg.DeepValueConfig
+	risk   cfg.RiskConfig
+	now    int64
+}
+
 // scanOutcomes evaluates every priced outcome of one market exactly as the
 // original inline loop did, updating stats. stop is true when the broker
 // reported insufficient balance and the whole tick must end without error.
-func (s *DeepValueStrategy) scanOutcomes(ctx context.Context, b *broker.Broker, m gamma.Market, held map[string]struct{}, config cfg.DeepValueConfig, risk cfg.RiskConfig, now int64, stats *dvStats) (stop bool, err error) {
+func (s *DeepValueStrategy) scanOutcomes(m gamma.Market, env dvCtx, stats *dvStats) (stop bool, err error) {
 	for i, outcome := range m.Outcomes {
 		if i >= len(m.OutcomePrices) || i >= len(m.TokenIDs) {
 			break
@@ -156,7 +166,7 @@ func (s *DeepValueStrategy) scanOutcomes(ctx context.Context, b *broker.Broker, 
 		tokenID := m.TokenIDs[i]
 		price := m.OutcomePrices[i]
 
-		if skip, stat := s.outcomeFilter(held, tokenID, price, config.MaxPrice, now); skip {
+		if skip, stat := s.outcomeFilter(env.held, tokenID, price, env.config.MaxPrice, env.now); skip {
 			stats.recordSkip(stat)
 			continue
 		}
@@ -165,19 +175,19 @@ func (s *DeepValueStrategy) scanOutcomes(ctx context.Context, b *broker.Broker, 
 			WinProb:    price,
 			Payout:     1 - price,
 			LossAmount: price,
-		}, risk.MaxPositionUSDC*10, config.MaxPosition, config.KellyFraction)
+		}, env.risk.MaxPositionUSDC*10, env.config.MaxPosition, env.config.KellyFraction)
 
 		if size <= 0 {
 			continue
 		}
 
-		stop, opened := s.tryBuy(ctx, b, m, outcome, tokenID, price, size, now)
+		stop, opened := s.tryBuy(m, outcome, tokenID, price, size, env)
 		if stop {
 			return true, nil
 		}
 		if opened {
 			stats.opened++
-			held[tokenID] = struct{}{}
+			env.held[tokenID] = struct{}{}
 		}
 	}
 	return false, nil
@@ -186,20 +196,20 @@ func (s *DeepValueStrategy) scanOutcomes(ctx context.Context, b *broker.Broker, 
 // tryBuy places one deep-value buy order. stop is true on insufficient
 // balance (the tick must end without error); opened is true when the position
 // was filled and logged, exactly like the original inline flow.
-func (s *DeepValueStrategy) tryBuy(ctx context.Context, b *broker.Broker, m gamma.Market, outcome, tokenID string, price, size float64, now int64) (stop, opened bool) {
-	result, buyErr := b.Buy(ctx, broker.BuyRequest{
+func (s *DeepValueStrategy) tryBuy(m gamma.Market, outcome, tokenID string, price, size float64, env dvCtx) (stop, opened bool) {
+	result, buyErr := env.b.Buy(env.ctx, broker.BuyRequest{
 		TokenID:  tokenID,
 		MarketID: m.ConditionID,
 		Outcome:  outcome,
 		Price:    price,
 		SizeUSDC: size,
-		TickSize: tickSizeOf(b, m.ConditionID),
-		NegRisk:  negRiskOf(b, m.ConditionID),
+		TickSize: tickSizeOf(env.b, m.ConditionID),
+		NegRisk:  negRiskOf(env.b, m.ConditionID),
 		Strategy: "deep_value",
 	})
 	if buyErr != nil {
 		if isDeadErr(buyErr) {
-			s.deadTokens[tokenID] = now + 3600
+			s.deadTokens[tokenID] = env.now + 3600
 		} else if strings.Contains(buyErr.Error(), "insufficient balance") {
 			slog.Warn("DeepValue: insufficient balance")
 			return true, false
@@ -209,7 +219,7 @@ func (s *DeepValueStrategy) tryBuy(ctx context.Context, b *broker.Broker, m gamm
 		return false, false
 	}
 
-	announceOpen(b, m.Question, outcome, price, size, result.FilledSize)
+	announceOpen(env.b, m.Question, outcome, price, size, result.FilledSize)
 	return false, true
 }
 

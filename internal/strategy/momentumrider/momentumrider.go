@@ -287,7 +287,8 @@ func (r *run) tryOutcome(m gamma.Market, i int, outcome string) outcomeDecision 
 		return r.handleBuyError(tokenID, buyErr)
 	}
 
-	r.announceOpen(question, outcome, priceChange, volDelta, avgVol, currentPrice, size, result.FilledSize)
+	r.announceOpen(openInfo{Question: question, Outcome: outcome, PriceChange: priceChange,
+		VolDelta: volDelta, AvgVol: avgVol, Price: currentPrice, Size: size, Filled: result.FilledSize})
 	r.stats.opened++
 	r.held[tokenID] = struct{}{}
 	return skipOutcome
@@ -338,25 +339,37 @@ func (r *run) handleBuyError(tokenID string, buyErr error) outcomeDecision {
 	return skipOutcome
 }
 
+// openInfo bundles the fill details logged/notified after a successful open.
+type openInfo struct {
+	Question    string
+	Outcome     string
+	PriceChange float64
+	VolDelta    float64
+	AvgVol      float64
+	Price       float64
+	Size        float64
+	Filled      float64
+}
+
 // announceOpen logs and notifies a successful open, keeping the original
 // field names, ordering and message formats.
-func (r *run) announceOpen(question, outcome string, priceChange, volDelta, avgVol, price, size, filled float64) {
+func (r *run) announceOpen(o openInfo) {
 	paperTag := ""
 	if r.b.IsPaper() {
 		paperTag = " [PAPER]"
 	}
 	volPctStr := "+0%"
-	if avgVol > 0 {
-		volPctStr = fmt.Sprintf("%+.0f%%", volDelta/avgVol*100)
+	if o.AvgVol > 0 {
+		volPctStr = fmt.Sprintf("%+.0f%%", o.VolDelta/o.AvgVol*100)
 	}
 	slog.Info("MomentumRider opened",
-		"question", question,
-		"outcome", outcome,
-		"change", fmt.Sprintf("%+.1f%%", priceChange*100),
+		"question", o.Question,
+		"outcome", o.Outcome,
+		"change", fmt.Sprintf("%+.1f%%", o.PriceChange*100),
 		"vol_spike", volPctStr,
-		"price", price,
-		"size", size,
-		"filled", filled,
+		"price", o.Price,
+		"size", o.Size,
+		"filled", o.Filled,
 		"paper", paperTag,
 	)
 
@@ -366,7 +379,7 @@ func (r *run) announceOpen(question, outcome string, priceChange, volDelta, avgV
 			mode = "PAPER"
 		}
 		msg := fmt.Sprintf("%s [MomentumRider] %s\n-> %s moved %+.1f%% | vol %s | buying @ %.3f | $%.2f",
-			mode, question, outcome, priceChange*100, volPctStr, price, size)
+			mode, o.Question, o.Outcome, o.PriceChange*100, volPctStr, o.Price, o.Size)
 		r.b.Notify(msg)
 	}
 }
