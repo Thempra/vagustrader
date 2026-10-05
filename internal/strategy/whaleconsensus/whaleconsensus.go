@@ -10,6 +10,7 @@ import (
 
 	"github.com/vagustrader/vagustrader/internal/broker"
 	"github.com/vagustrader/vagustrader/internal/cfg"
+	"github.com/vagustrader/vagustrader/internal/client/dataapi"
 	"github.com/vagustrader/vagustrader/internal/strategy/kelly"
 )
 
@@ -80,34 +81,7 @@ func (s *WhaleConsensusStrategy) tick(b *broker.Broker) error {
 		held[p.TokenID] = struct{}{}
 	}
 
-	tokenSources := make(map[string][]sourceTrader)
-	tokenMarkets := make(map[string]string)
-	tokenOutcomes := make(map[string]string)
-	seen := make(map[string]struct{})
-
-	for _, trader := range topTraders {
-		traderPositions, err := b.GetDataAPI().GetPositions(trader.Address)
-		if err != nil {
-			continue
-		}
-		for _, pos := range traderPositions {
-			if pos.TokenID == "" {
-				continue
-			}
-			tokenSources[pos.TokenID] = append(tokenSources[pos.TokenID], sourceTrader{
-				Address: trader.Address,
-				Name:    trader.Name,
-				Outcome: pos.Outcome,
-				Size:    pos.Size,
-				Price:   pos.AvgPrice,
-			})
-			if _, ok := seen[pos.TokenID]; !ok {
-				seen[pos.TokenID] = struct{}{}
-				tokenMarkets[pos.TokenID] = pos.MarketID
-				tokenOutcomes[pos.TokenID] = pos.Outcome
-			}
-		}
-	}
+	tokenSources, tokenMarkets, tokenOutcomes := collectConsensusSources(b, topTraders)
 
 	env := whaleCtx{b: b, tokenMarkets: tokenMarkets, tokenOutcomes: tokenOutcomes,
 		held: held, config: config, risk: risk, now: time.Now().Unix()}
@@ -146,6 +120,41 @@ type whaleQuote struct {
 	outcome  string
 	tickSize string
 	negRisk  bool
+}
+
+// collectConsensusSources gathers every whale position per token, replaying
+// the original inline collection loop: sources accumulate per token while the
+// first-seen position supplies the market/outcome metadata.
+func collectConsensusSources(b *broker.Broker, topTraders []dataapi.LeaderboardEntry) (tokenSources map[string][]sourceTrader, tokenMarkets, tokenOutcomes map[string]string) {
+	tokenSources = make(map[string][]sourceTrader)
+	tokenMarkets = make(map[string]string)
+	tokenOutcomes = make(map[string]string)
+	seen := make(map[string]struct{})
+
+	for _, trader := range topTraders {
+		traderPositions, err := b.GetDataAPI().GetPositions(trader.Address)
+		if err != nil {
+			continue
+		}
+		for _, pos := range traderPositions {
+			if pos.TokenID == "" {
+				continue
+			}
+			tokenSources[pos.TokenID] = append(tokenSources[pos.TokenID], sourceTrader{
+				Address: trader.Address,
+				Name:    trader.Name,
+				Outcome: pos.Outcome,
+				Size:    pos.Size,
+				Price:   pos.AvgPrice,
+			})
+			if _, ok := seen[pos.TokenID]; !ok {
+				seen[pos.TokenID] = struct{}{}
+				tokenMarkets[pos.TokenID] = pos.MarketID
+				tokenOutcomes[pos.TokenID] = pos.Outcome
+			}
+		}
+	}
+	return tokenSources, tokenMarkets, tokenOutcomes
 }
 
 // openCandidate replays the original per-token guard chain and, when every
