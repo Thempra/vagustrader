@@ -1,10 +1,23 @@
 version: "3.9"
 
+x-polymarket-hosts: &polymarket-hosts
+  # ISP SNI/IP block (oct-2026): the two Cloudflare IPs Polymarket DNS returns
+  # (104.18.34.205 / 172.64.153.51) get TLS-reset from this hosting's egress,
+  # but other Cloudflare IPs in the same PoP serve vhost+SNI correctly.
+  # Pin the hostnames to a working Cloudflare IP (verified 2026-10-06).
+  - "clob.polymarket.com:104.17.207.5"
+  - "gamma-api.polymarket.com:104.17.207.5"
+  - "data-api.polymarket.com:104.17.207.5"
+  - "ws-subscriptions-clob.polymarket.com:104.17.207.5"
+  - "www.clob.polymarket.com:104.17.207.5"
+  - "relayer-v2.polymarket.com:104.17.207.5"
+
 services:
   bot:
     build: .
     command: vagustrader run --config /app/config.live.yml
     env_file: .env
+    extra_hosts: *polymarket-hosts
     volumes:
       - data:/app/data
       - logs:/app/logs
@@ -24,6 +37,7 @@ services:
   dashboard:
     build: .
     command: vagustrader dashboard --config /app/config.live.yml --db data/vagustrader.db
+    extra_hosts: *polymarket-hosts
     volumes:
       - data:/app/data
     ports:
