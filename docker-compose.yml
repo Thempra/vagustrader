@@ -1,10 +1,21 @@
 version: "3.9"
 
+x-polymarket-hosts: &polymarket-hosts
+  # Ver docker-compose.live.yml: bloqueo SNI/IP del ISP hacia las IPs que
+  # devuelve DNS de Polymarket; fijamos hostnames a una IP Cloudflare válida.
+  - "clob.polymarket.com:104.17.207.5"
+  - "gamma-api.polymarket.com:104.17.207.5"
+  - "data-api.polymarket.com:104.17.207.5"
+  - "ws-subscriptions-clob.polymarket.com:104.17.207.5"
+  - "www.clob.polymarket.com:104.17.207.5"
+  - "relayer-v2.polymarket.com:104.17.207.5"
+
 services:
   bot:
     build: .
     command: vagustrader run --paper
     env_file: .env
+    extra_hosts: *polymarket-hosts
     volumes:
       - data:/app/data
       - logs:/app/logs
@@ -24,6 +35,7 @@ services:
   dashboard:
     build: .
     command: vagustrader dashboard --config /app/config.yml
+    extra_hosts: *polymarket-hosts
     volumes:
       - data:/app/data
     ports:
