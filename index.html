@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="es" class="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VagusTrader — Your liquidity edge, automated</title>
+<meta name="description" content="Open-source automated trading for Polymarket. Follow whale flow, ride momentum, fade the crowd. Go-powered, risk-gated, self-hosted.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#05070c; --bg2:#0a0e17; --bg3:#111827; --panel:#0d1320;
+  --border:#1e293b; --border-hot:#2dd4bf33;
+  --text:#e2e8f0; --dim:#64748b; --faint:#334155;
+  --accent:#3b82f6; --green:#22c55e; --red:#ef4444; --amber:#f59e0b;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --sans:'Space Grotesk',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:16px;line-height:1.6;overflow-x:hidden}
+::selection{background:var(--accent);color:#fff}
+a{color:inherit;text-decoration:none}
+.mono{font-family:var(--mono)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+
+/* ── ticker ─────────────────────────── */
+.ticker{border-bottom:1px solid var(--border);background:#04060a;overflow:hidden;white-space:nowrap;position:relative;height:34px}
+.ticker-track{display:inline-flex;gap:38px;align-items:center;height:34px;font-family:var(--mono);font-size:12px;letter-spacing:.04em;animation:tick 45s linear infinite;will-change:transform}
+.ticker-track span.up{color:var(--green)}.ticker-track span.dn{color:var(--red)}.ticker-track span.nu{color:var(--dim)}
+.ticker-track b{color:var(--text);font-weight:500}
+@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+/* ── nav ────────────────────────────── */
+nav{position:sticky;top:0;z-index:50;background:#05070cdd;backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.nav-in{display:flex;align-items:center;gap:22px;height:58px}
+.brand{font-family:var(--mono);font-weight:800;font-size:17px;letter-spacing:.03em}
+.brand i{font-style:normal;color:var(--accent)}
+.nav-links{display:flex;gap:22px;font-size:13px;color:var(--dim);font-family:var(--mono)}
+.nav-links a:hover{color:var(--text)}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.lang-sw{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:11px}
+.lang-sw button{background:transparent;color:var(--dim);border:0;padding:5px 11px;cursor:pointer;font:inherit;letter-spacing:.06em}
+.lang-sw button.on{background:var(--bg3);color:var(--text)}
+.btn{display:inline-block;padding:9px 18px;border-radius:7px;font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.03em;transition:.18s;border:1px solid var(--border)}
+.btn-gh{color:var(--text)} .btn-gh:hover{border-color:var(--dim)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:#2563eb;box-shadow:0 0 28px #3b82f655}
+
+/* ── hero ───────────────────────────── */
+.hero{position:relative;padding:96px 0 84px;background:
+ radial-gradient(900px 420px at 70% -10%, #3b82f614, transparent 65%),
+ radial-gradient(700px 380px at 12% 8%, #22c55e0d, transparent 60%)}
+.hero .wrap{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--green);display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.kicker::before{content:'';width:26px;height:1px;background:var(--green)}
+h1{font-size:clamp(38px,4.6vw,58px);font-weight:700;line-height:1.06;letter-spacing:-.02em}
+h1 .g{color:var(--green)} h1 .a{color:var(--amber)}
+.hero p.sub{margin:22px 0 32px;color:var(--dim);font-size:17px;max-width:520px}
+.hero p.sub b{color:var(--text);font-weight:600}
+.cta-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.cmd-copy{font-family:var(--mono);font-size:13px;background:var(--bg2);border:1px solid var(--border);border-radius:7px;padding:10px 14px;color:var(--dim);cursor:pointer;transition:.18s}
+.cmd-copy:hover{border-color:var(--accent);color:var(--text)}
+.cmd-copy b{color:var(--green);font-weight:500}
+.hero-stats{display:flex;gap:34px;margin-top:44px;padding-top:26px;border-top:1px solid var(--border)}
+.hstat .v{font-family:var(--mono);font-size:24px;font-weight:800;color:var(--text)}
+.hstat .v small{font-size:14px;color:var(--dim);font-weight:400}
+.hstat .l{font-size:11px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-top:2px}
+
+/* terminal mock */
+.term{background:#070b12;border:1px solid var(--border);border-radius:12px;box-shadow:0 30px 80px -20px #000c, 0 0 0 1px #ffffff06 inset;overflow:hidden;font-family:var(--mono);font-size:12.5px;transform:rotate(.4deg)}
+.term-bar{display:flex;align-items:center;gap:7px;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.dot{width:10px;height:10px;border-radius:50%}
+.term-title{margin-left:8px;color:var(--faint);font-size:11px;letter-spacing:.05em}
+.term-body{padding:16px 18px;line-height:1.9;min-height:330px}
+.ln-g{color:var(--green)}.ln-a{color:var(--amber)}.ln-d{color:var(--dim)}.ln-b{color:var(--accent)}.ln-r{color:var(--red)}.ln-w{color:var(--text)}
+.cursor{display:inline-block;width:8px;height:15px;background:var(--green);vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.tag-live{margin-left:auto;font-size:10px;color:var(--green);border:1px solid #22c55e44;background:#22c55e14;padding:2px 8px;border-radius:4px;letter-spacing:.1em}
+
+/* ── sections ───────────────────────── */
+section{padding:88px 0}
+.sec-kicker{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+h2{font-size:clamp(28px,3.2vw,40px);font-weight:700;letter-spacing:-.015em;margin-bottom:14px}
+.sec-sub{color:var(--dim);max-width:640px;margin-bottom:52px}
+
+/* strategy cards */
+.grid{display:grid;gap:16px}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.card{background:linear-gradient(180deg,var(--panel),#0a0f1a);border:1px solid var(--border);border-radius:12px;padding:26px;transition:.22s;position:relative;overflow:hidden}
+.card:hover{border-color:#3b82f655;transform:translateY(-3px);box-shadow:0 18px 44px -14px #3b82f622}
+.card .idx{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.12em}
+.card h3{font-size:19px;margin:8px 0 4px;font-weight:600}
+.card .en-name{font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:.06em;margin-bottom:12px;display:block}
+.card p{color:var(--dim);font-size:14.5px}
+.pill{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:2px 8px;border-radius:4px;margin-top:14px}
+.pill.paper{background:#44300a;color:var(--amber)}
+.pill.live{background:#0a2a0a;color:var(--green)}
+.pill.core{background:#12233f;color:#7ab3ff}
+
+/* dashboard mock strip */
+.mock{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--bg2)}
+.mock-bar{display:flex;align-items:center;gap:16px;padding:10px 16px;background:var(--bg3);border-bottom:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.08em}
+.mock-kpis{display:flex;border-bottom:1px solid var(--border);font-family:var(--mono)}
+.kpi{flex:1;padding:18px 20px;border-right:1px solid var(--border)}
+.kpi:last-child{border-right:0}
+.kpi .kl{font-size:10px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+.kpi .kv{font-size:21px;font-weight:800;margin-top:3px}
+.pos{color:var(--green)}.neg{color:var(--red)}.neu{color:var(--amber)}.blu{color:var(--accent)}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+th{background:#0f1524;color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase;text-align:left;padding:9px 14px;font-weight:600}
+td{padding:9px 14px;border-bottom:1px solid #1e293b80;color:var(--text)}
+tr:hover td{background:var(--bg3)}
+.badge-yes{background:#14532d;color:var(--green);padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700}
+.badge-no{background:#450a0a;color:var(--red);padding:1px 7px;border-radius:4px;font-size:11px;font-weight:700}
+.modes{font-size:10px;font-weight:700;padding:1px 6px;border-radius:3px}
+.m-paper{background:#44300a;color:var(--amber)}.m-live{background:#0a2a0a;color:var(--green)}
+
+/* risk */
+.risk-list{display:grid;grid-template-columns:repeat(2,1fr);gap:0 44px}
+.risk-item{display:flex;gap:14px;padding:16px 0;border-bottom:1px solid #1e293b80}
+.risk-item .ck{color:var(--green);font-family:var(--mono);font-weight:800}
+.risk-item .rk{font-family:var(--mono);font-size:13.5px;color:var(--text)}
+.risk-item .rd{font-size:13px;color:var(--dim)}
+
+/* quickstart */
+.steps{counter-reset:s}
+.step{display:grid;grid-template-columns:52px 1fr;gap:20px;padding:22px 0;border-bottom:1px solid #1e293b80}
+.step>div:last-child{min-width:0}
+.step::before{counter-increment:s;content:counter(s,decimal-leading-zero);font-family:var(--mono);color:var(--accent);font-size:13px;font-weight:700;padding-top:4px}
+.step h4{font-size:17px;margin-bottom:6px;font-weight:600}
+.step p{color:var(--dim);font-size:14.5px}
+.code{font-family:var(--mono);font-size:13px;background:#070b12;border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-top:10px;color:#a5f3c4;overflow-x:auto;white-space:nowrap}
+.code .cm{color:var(--faint)}
+
+/* disclaimer / footer */
+.disclaimer{border:1px solid #f59e0b33;background:#f59e0b09;border-radius:12px;padding:22px 26px;font-size:13.5px;color:#d8c9a3}
+.disclaimer b{color:var(--amber)}
+footer{border-top:1px solid var(--border);padding:40px 0;color:var(--dim);font-size:13px;font-family:var(--mono)}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+
+/* i18n: html.es => Spanish, otherwise English */
+html:not(.es) [data-es]{display:none!important}
+html.es [data-en]{display:none!important}
+
+@media(max-width:960px){
+ .hero .wrap{grid-template-columns:1fr}
+ .g3,.g2,.risk-list{grid-template-columns:1fr}
+ .hero-stats{flex-wrap:wrap;gap:22px}
+ .nav-links{display:none}
+}
+</style>
+</head>
+<body class="es">
+
+<div class="ticker"><div class="ticker-track" id="ticker">
+  <span class="nu">VAGUS/USDC</span><span class="up">▲ LIVE ON POLYGON</span>
+  <span class="nu">CHAIN</span><span><b>POLYGON · USDC</b></span>
+  <span class="nu">VENUE</span><span><b>POLYMARKET CLOB</b></span>
+  <span class="nu">STRATS</span><span class="up">▲ 10 SHIPPED</span>
+  <span class="nu">SETTLEMENT</span><span><b>AUTO 7×24</b></span>
+  <span class="nu">RISK</span><span class="dn">▼ HARD DAILY STOP</span>
+  <span class="nu">STACK</span><span><b>GO · SQLITE · DOCKER</b></span>
+  <span class="nu">SOURCE</span><span class="up">▲ 100% OPEN</span>
+  <span class="nu">VAGUS/USDC</span><span class="up">▲ LIVE ON POLYGON</span>
+  <span class="nu">CHAIN</span><span><b>POLYGON · USDC</b></span>
+  <span class="nu">VENUE</span><span><b>POLYMARKET CLOB</b></span>
+  <span class="nu">STRATS</span><span class="up">▲ 10 SHIPPED</span>
+  <span class="nu">SETTLEMENT</span><span><b>AUTO 7×24</b></span>
+  <span class="nu">RISK</span><span class="dn">▼ HARD DAILY STOP</span>
+  <span class="nu">STACK</span><span><b>GO · SQLITE · DOCKER</b></span>
+  <span class="nu">SOURCE</span><span class="up">▲ 100% OPEN</span>
+</div></div>
+
+<nav><div class="wrap nav-in">
+  <a class="brand" href="#">VAGUS<i>TRADER</i></a>
+  <div class="nav-links">
+    <a href="#strats"><span data-en>STRATEGIES</span><span data-es>ESTRATEGIAS</span></a>
+    <a href="#dash"><span data-en>DASHBOARD</span><span data-es>DASHBOARD</span></a>
+    <a href="#risk"><span data-en>RISK</span><span data-es>RIESGO</span></a>
+    <a href="#start"><span data-en>GET STARTED</span><span data-es>EMPIEZA</span></a>
+  </div>
+  <div class="nav-right">
+    <div class="lang-sw"><button id="btn-es" class="on">ES</button><button id="btn-en">EN</button></div>
+    <a class="btn btn-gh" href="https://github.com/Thempra/vagustrader">GitHub ↗</a>
+    <a class="btn btn-primary" href="#start"><span data-en>Run it</span><span data-es>Lánzalo</span></a>
+  </div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <div>
+    <div class="kicker blk" data-en>SELF-HOSTED PREDICTION-MARKET ALPHA</div>
+    <div class="kicker blk" data-es>ALFA AUTOALOJADA EN MERCADOS PREDICTIVOS</div>
+    <h1 data-en>Your capital, <span class="g">awake 24/7</span>. Your screen, <span class="a">finally free</span>.</h1>
+    <h1 data-es>Tu capital, <span class="g">despierto 24/7</span>. Tu pantalla, <span class="a">por fin libre</span>.</h1>
+    <p class="sub" data-en>VagusTrader is an <b>open-source trading bot for Polymarket</b> — the world's largest prediction market. It copies whales, rides momentum, fades overpriced crowds and settles positions automatically. Written in Go. Runs on a €5 VPS. <b>Your keys never leave your machine.</b></p>
+    <p class="sub" data-es>VagusTrader es un <b>bot de trading open-source para Polymarket</b>, el mayor mercado predictivo del mundo. Copia ballenas, monta el momentum, contraataca masas sobrevaloradas y liquida posiciones solo. Escrito en Go. Corre en un VPS de 5 €. <b>Tus claves nunca salen de tu máquina.</b></p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/Thempra/vagustrader"><span data-en>★ Star on GitHub</span><span data-es>★ Estrella en GitHub</span></a>
+      <div class="cmd-copy" onclick="navigator.clipboard.writeText('docker compose up -d --build');this.innerHTML='✓ copied'">docker compose up -d --build</div>
+    </div>
+    <div class="hero-stats">
+      <div class="hstat"><div class="v">10<small>+</small></div><div class="l"><span data-en>strategies</span><span data-es>estrategias</span></div></div>
+      <div class="hstat"><div class="v">24/7</div><div class="l"><span data-en>autonomous</span><span data-es>autónomo</span></div></div>
+      <div class="hstat"><div class="v">15</div><div class="l"><span data-en>risk guards</span><span data-es>guards de riesgo</span></div></div>
+      <div class="hstat"><div class="v">0</div><div class="l"><span data-en>cloud dependencies</span><span data-es>deps en la nube</span></div></div>
+      <div class="hstat"><div class="v">100%</div><div class="l"><span data-en>source on your disk</span><span data-es>código en tu disco</span></div></div>
+    </div>
+  </div>
+  <div class="term">
+    <div class="term-bar">
+      <div class="dot" style="background:#ef4444"></div><div class="dot" style="background:#f59e0b"></div><div class="dot" style="background:#22c55e"></div>
+      <div class="term-title">vagustrader@vps — engine</div><div class="tag-live">● PAPER</div>
+    </div>
+    <div class="term-body">
+      <div class="ln-d">[booting] engine start pid=1 mode=paper</div>
+      <div class="ln-d">[cfg] config.yml + environment overrides loaded</div>
+      <div class="ln-b">[db] SQLite WAL ready · data/vagustrader.db</div>
+      <div class="ln-g">[wallet] paper wallet contrarian=10000.00 USDC</div>
+      <div class="ln-g">[strategy] contrarian + settlement wired</div>
+      <div class="ln-g">[ws] market feed subscribed</div>
+      <div class="ln-w">[cycle] tick start <span class="ln-d">markets=1183</span></div>
+      <div class="ln-d">[risk] spendable_usdc=9840.00 max_pos=50.00</div>
+      <div class="ln-w">[guard] <span class="ln-d">signal</span> Δprice=-12.4% in 60m → fade</div>
+      <div class="ln-g">[order] BUY YES 40.00 USDC @ 0.5200 [GTC]</div>
+      <div class="ln-g">[fill] verified token=…3027 avg=0.5200</div>
+      <div class="ln-g">[notify] Telegram delivered</div>
+      <div class="ln-w">[settle] WIN +38.46 USDC <span class="ln-d">「Will BTC hold $100k this week?」</span></div>
+      <div class="ln-a">[risk] stop-intraday check: loss today −12.30 / −200.00</div>
+      <div class="ln-d">[cycle] tick done in 2.31s · next in 120s</div>
+      <div><span class="ln-g">$</span> <span class="cursor"></span></div>
+    </div>
+  </div>
+</div></header>
+
+<section id="strats"><div class="wrap">
+  <div class="sec-kicker">THE ARSENAL</div>
+  <h2 data-en>Ten strategies. One engine. Zero emotions.</h2>
+  <h2 data-es>Diez estrategias. Un motor. Cero emociones.</h2>
+  <p class="sec-sub" data-en>Each strategy is an independent plugin with its own bankroll, diagnostics and risk budget. Test them all simultaneously in paper mode — the engine enforces one strategy at a time before anything touches real money.</p>
+  <p class="sec-sub" data-es>Cada estrategia es un plugin independiente con su propio bankroll, diagnósticos y presupuesto de riesgo. Pruéalas todas a la vez en modo paper — el motor exige una sola estrategia antes de que nada toque dinero real.</p>
+  <div class="grid g3">
+    <div class="card"><span class="idx">STRAT_01</span>
+      <h3 data-en>Copy Trading</h3><h3 data-es>Copy Trading</h3>
+      <span class="en-name">copy_trading</span>
+      <p data-en>Automatically mirrors the open positions of Polymarket's most profitable leaderboard traders — with price guards so you copy entries, not exits.</p>
+      <p data-es>Refleja automáticamente las posiciones abiertas de los traders más rentables del leaderboard de Polymarket — con price guards para copiar entradas, no salidas.</p>
+      <span class="pill core">CORE</span>
+    </div>
+    <div class="card"><span class="idx">STRAT_02</span>
+      <h3 data-en>Contrarian Fade</h3><h3 data-es>Contrarian Fade</h3>
+      <span class="en-name">contrarian · LIVE-READY</span>
+      <p data-en>When a herd panics and dumps an outcome −10% in an hour, markets overshoot. This strategy fades the move and lets Kelly sizing pick the bet size.</p>
+      <p data-es>Cuando la masa entra en pánico y tira un resultado −10% en una hora, el mercado sobrecorrige. Esta estrategia contradice el movimiento y deja el sizing en manos de Kelly.</p>
+      <span class="pill live">FLAGSHIP</span>
+    </div>
+    <div class="card"><span class="idx">STRAT_03</span>
+      <h3 data-en>Whale Consensus</h3><h3 data-es>Whale Consensus</h3>
+      <span class="en-name">whale_consensus</span>
+      <p data-en>When several independent high-PnL whales converge on the same token within a window, that's information. The bot acts on consensus, not noise.</p>
+      <p data-es>Cuando varias ballenas independientes de alto PnL convergen en el mismo token en una ventana, eso es información. El bot actúa por consenso, no por ruido.</p>
+      <span class="pill paper">PAPER</span>
+    </div>
+    <div class="card"><span class="idx">STRAT_04</span>
+      <h3 data-en>Momentum Rider</h3><h3 data-es>Momentum Rider</h3>
+      <span class="en-name">momentum_rider</span>
+      <p data-en>Breakouts with volume get ridden; dead money gets avoided. Time-bounded entries so capital never marries a stale market.</p>
+      <p data-es>Los breakouts con volumen se montan; el dinero muerto se evita. Entradas con límite temporal para que el capital no se case con un mercado estancado.</p>
+      <span class="pill paper">PAPER</span>
+    </div>
+    <div class="card"><span class="idx">STRAT_05</span>
+      <h3 data-en>Under Hunter</h3><h3 data-es>Under Hunter</h3>
+      <span class="en-name">under_hunter</span>
+      <p data-en>Systematically scoops structurally underpriced longshots where the favorite–longshot bias pays the disciplined buyer.</p>
+      <p data-es>Recoge sistemáticamente underdogs estructuralmente baratos donde el sesgo favorito–longshot paga al comprador disciplinado.</p>
+      <span class="pill paper">PAPER</span>
+    </div>
+    <div class="card"><span class="idx">STRAT_06</span>
+      <h3 data-en>+4 more, and Settlement</h3><h3 data-es>+4 más, y Settlement</h3>
+      <span class="en-name">deep_value · volume_surge · arbitrage · sniper</span>
+      <p data-en>Deep value, volume surges, YES+NO mispricing, resolution sniping — plus an always-on housekeeper that detects resolutions, books PnL and frees capital while you sleep.</p>
+      <p data-es>Deep value, picos de volumen, malpricing YES+NO, francotirador de resoluciones — más una ama de llaves siempre activa que detecta resoluciones, anota el PnL y libera capital mientras duermes.</p>
+      <span class="pill core">AUTO-SETTLE</span>
+    </div>
+  </div>
+</div></section>
+
+<section id="dash" style="background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border)"><div class="wrap">
+  <div class="sec-kicker">COCKPIT</div>
+  <h2 data-en>A Bloomberg vibe. A README install.</h2>
+  <h2 data-es>Vibra Bloomberg. Instalación de README.</h2>
+  <p class="sec-sub" data-en>Built-in web dashboard: dark, monospace, zero frameworks, < 1 ms cached rendering. Every fill, every position, every source trader behind each bet — one glance.</p>
+  <p class="sec-sub" data-es>Dashboard web integrado: oscuro, monoespaciado, cero frameworks, caché renderizada en < 1 ms. Cada fill, cada posición, cada trader detrás de cada apuesta — de un vistazo.</p>
+  <div class="mock">
+    <div class="mock-bar">VAGUSTD // <span data-en>positions</span><span data-es>posiciones</span> <span style="color:var(--accent)">01:04:04 UTC</span></div>
+    <div class="mock-kpis">
+      <div class="kpi"><div class="kl"><span data-en>realized pnl</span><span data-es>pnL realizado</span></div><div class="kv pos">+1,284.30</div></div>
+      <div class="kpi"><div class="kl"><span data-en>unrealized</span><span data-es>no realizado</span></div><div class="kv blu">+312.77</div></div>
+      <div class="kpi"><div class="kl"><span data-en>open pos</span><span data-es>pos. abiertas</span></div><div class="kv">14</div></div>
+      <div class="kpi"><div class="kl"><span data-en>invested today</span><span data-es>invertido hoy</span></div><div class="kv neu">260.00</div></div>
+      <div class="kpi"><div class="kl"><span data-en>win rate</span><span data-es>win rate</span></div><div class="kv pos">61.9%</div></div>
+      <div class="kpi"><div class="kl"><span data-en>mode</span><span data-es>modo</span></div><div class="kv"><span class="m-paper">PAPER</span></div></div>
+    </div>
+    <table>
+      <tr><th><span data-en>market</span><span data-es>mercado</span></th><th><span data-en>side</span><span data-es>lado</span></th><th>SIZE</th><th>AVG</th><th>VALUE</th><th>PnL</th><th>STRAT</th></tr>
+      <tr><td>Will BTC close the week above $100K?</td><td><span class="badge-yes">YES</span> <span class="m-paper">PAPER</span></td><td>48.00</td><td>0.5200</td><td class="blu">61.54</td><td class="pos">+13.54</td><td class="nu" style="color:var(--dim)">contrarian</td></tr>
+      <tr><td>Fed rate cut at next FOMC meeting?</td><td><span class="badge-no">NO</span></td><td>50.00</td><td>0.4100</td><td class="blu">55.50</td><td class="pos">+5.50</td><td style="color:var(--dim)">whale_consensus</td></tr>
+      <tr><td>Champions League: Tuesday upsets?</td><td><span class="badge-yes">YES</span></td><td>30.00</td><td>0.6700</td><td class="blu">26.10</td><td class="neg">−3.90</td><td style="color:var(--dim)">copy_trading</td></tr>
+    </table>
+  </div>
+</div></section>
+
+<section id="risk"><div class="wrap">
+  <div class="sec-kicker">DYOR, BUT WITH SEATBELTS</div>
+  <h2 data-en>Freedom without risk limits is just a faster way to zero</h2>
+  <h2 data-es>Libertad sin límites de riesgo es solo una forma más rápida de llegar a cero</h2>
+  <p class="sec-sub" data-en>Fifteen hard guards, enforced at order time — not advisory, not a webhook, not "coming soon". The engine refuses to place orders that break them.</p>
+  <p class="sec-sub" data-es>Quince guards duros, aplicados en el momento de la orden — no son advice, ni un webhook, ni "próximamente". El motor se niega a colocar órdenes que los incumplen.</p>
+  <div class="risk-list">
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">daily_loss_limit_usdc</div><div class="rd" data-en>No new entries once the day bleeds past your cap. Resets at UTC midnight.</div><div class="rd" data-es>Cero entradas nuevas cuando el día sangra más de tu límite. Reset a medianoche UTC.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">max_position_usdc</div><div class="rd" data-en>Position sizes are hard-capped, per strategy.</div><div class="rd" data-es>Tamaño de posición topado en duro, por estrategia.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">max_days_to_end: 7</div><div class="rd" data-en>Never buys markets resolving more than a week out. Capital stays liquid.</div><div class="rd" data-es>Nunca compra mercados que resuelvan a más de una semana. El capital sigue líquido.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">price_guard: 5%</div><div class="rd" data-en>Copy entries only near the whale's original price. No chasing.</div><div class="rd" data-es>Copias entradas solo cerca del precio original de la ballena. Nada de perseguir.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">fill verification</div><div class="rd" data-en>Every order verified against on-exchange fills; books only what actually filled.</div><div class="rd" data-es>Cada orden verificada contra fills reales; solo se anota lo que de verdad ejecutó.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">live-mode single strategy</div><div class="rd" data-en>The engine physically refuses to run more than one trading strategy with real money.</div><div class="rd" data-es>El motor se niega físicamente a correr más de una estrategia con dinero real.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">min_entry 0.15 / max_entry 0.80</div><div class="rd" data-en>No lottery tickets, no coin-flip lotto. Edge bands only.</div><div class="rd" data-es>Ni cupones, ni loterías de coin-flip. Solo bandas con edge.</div></div></div>
+    <div class="risk-item"><span class="ck">✓</span><div><div class="rk">paper mode first, always</div><div class="rd" data-en>Every strategy earns its keep in simulation — virtual bankroll per strategy — before you flip it live.</div><div class="rd" data-es>Cada estrategia se gana la vida en simulación — bankroll virtual por estrategia — antes de pasarla a real.</div></div></div>
+  </div>
+</div></section>
+
+<section id="start" style="background:var(--bg2);border-top:1px solid var(--border)"><div class="wrap">
+  <div class="sec-kicker">FROM CLONE TO FILLED ORDER</div>
+  <h2 data-en>Five minutes to your first trade</h2>
+  <h2 data-es>Cinco minutos hasta tu primera operación</h2>
+  <div class="steps" style="margin-top:40px">
+    <div class="step"><div></div><div>
+      <h4 data-en>Clone & configure</h4><h4 data-es>Clona y configura</h4>
+      <p data-en>Point one YAML at your strategy mix, drop credentials in .env.</p>
+      <p data-es>Apunta un YAML a tu mezcla de estrategias y deja las credenciales en .env.</p>
+      <div class="code">git clone git@github.com:Thempra/vagustrader.git && cd vagustrader<br>cp .env.example .env && cp config.yml.example config.yml</div>
+    </div></div>
+    <div class="step"><div></div><div>
+      <h4 data-en>Start in paper mode</h4><h4 data-es>Arranca en modo paper</h4>
+      <p data-en>Virtual bankroll, real market data, real risk gates. No money, no keys needed to learn.</p>
+      <p data-es>Bankroll virtual, datos reales de mercado, guards de riesgo reales. Sin dinero ni claves para aprender.</p>
+      <div class="code">docker compose up -d --build<br><span class="cm"># dashboard → http://localhost:8080</span></div>
+    </div></div>
+    <div class="step"><div></div><div>
+      <h4 data-en>Let it run for a week</h4><h4 data-es>Déjalo correr una semana</h4>
+      <p data-en>Compare strategy diagnostics, win rates and PnL snapshots. Kill what's flat, double down on what's sharp — it's just YAML.</p>
+      <p data-es>Compara diagnósticos, win rates y snapshots de PnL por estrategia. Mata lo plano, refuerza lo afilado — es solo YAML.</p>
+      <div class="code">vagustrader status <span class="cm"># or watch the dashboard, or Telegram pings</span></div>
+    </div></div>
+    <div class="step"><div></div><div>
+      <h4 data-en>Go live — one strategy, small, on your terms</h4><h4 data-es>Pasa a real — una estrategia, en pequeño, a tu manera</h4>
+      <p data-en>Derive CLOB credentials from your wallet, set your risk budgets, start with an amount you'd shrug off losing. The engine does the rest: scanning, sizing, signing, settling.</p>
+      <p data-es>Deriva las credenciales CLOB desde tu wallet, fija tus presupuestos de riesgo, empieza con una cantidad cuya pérdida te daría igual. El motor hace el resto: escaneo, sizing, firmas, liquidaciones.</p>
+      <div class="code">vagustrader derive-creds && vagustrader run</div>
+    </div></div>
+  </div>
+
+  <div class="disclaimer" style="margin-top:56px" data-en>
+    <b>⚠ Read this twice:</b> prediction markets are volatile and you can lose 100% of what you deploy. VagusTrader is open-source software, not financial advice, not a fund, and it makes no promises about returns — the honest ones are in the repo's performance docs, drawdowns included. Never run live with a hot wallet holding more than you can afford to lose. You press the button; you own the risk. <b>Trade your own money, your own call.</b>
+  </div>
+  <div class="disclaimer" style="margin-top:56px" data-es>
+    <b>⚠ Lee esto dos veces:</b> los mercados predictivos son volátiles y puedes perder el 100% de lo que despliegues. VagusTrader es software open-source, no asesoramiento financiero, no es un fondo, y no promete rentabilidades — las honestas están en los docs de rendimiento del repo, drawdowns incluidos. Nunca lo lances en real con una hot wallet con más de lo que puedes permitirte perder. El botón lo pulsas tú; el riesgo es tuyo. <b>Tu dinero, tu decisión.</b>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <div>VAGUSTRADER · <span data-en>built in Go, shipped in Docker, owned by you</span><span data-es>hecho en Go, desplegado en Docker, tuyo</span> · MIT</div>
+  <div><a href="https://github.com/Thempra/vagustrader">GitHub</a> · <a href="https://github.com/Thempra/vagustrader/tree/master/docs/foundation">Docs</a> · <a href="https://polymarket.com">Polymarket</a></div>
+</div></footer>
+
+<script>
+const root=document.documentElement;
+const bE=document.getElementById('btn-es'),bN=document.getElementById('btn-en');
+function setLang(es){root.classList.toggle('es',es);root.lang=es?'es':'en';bE.classList.toggle('on',es);bN.classList.toggle('on',!es);localStorage.lang=es?'es':'en'}
+bE.onclick=()=>setLang(true);
+bN.onclick=()=>setLang(false);
+if(localStorage.lang==='en')setLang(false);
+</script>
+</body>
+</html>
