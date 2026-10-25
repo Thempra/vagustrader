@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"testing"
 
@@ -15,14 +16,52 @@ import (
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 )
 
+// Never commit real credentials here. Tests that only exercise the signing
+// pipeline use a freshly generated throwaway key; tests that talk to the live
+// CLOB require VAGUS_TEST_PRIVATE_KEY (and are skipped otherwise).
+const (
+	envTestPrivateKey = "VAGUS_TEST_PRIVATE_KEY"
+	envLiveCLOB       = "VAGUS_LIVE_CLOB_TESTS"
+
+	// testDepositWallet is a public address (no secret); used as the
+	// POLY_1271 maker/signer in structural assertions.
+	testDepositWallet = "0x2ed0ef344e96fc0e2e2fb3622474715f92d93173"
+	// testTokenID is a public market token id (no secret).
+	testTokenID = "36161990524808999529099890841186860907449767867066339846328156147773282747583"
+)
+
+// newTestSigner returns a signer backed by VAGUS_TEST_PRIVATE_KEY when set,
+// otherwise by a randomly generated throwaway key.
+func newTestSigner(t *testing.T, chainID int) *Signer {
+	t.Helper()
+	keyHex := strings.TrimSpace(os.Getenv(envTestPrivateKey))
+	if keyHex == "" {
+		ecdsaKey, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatalf("generate throwaway key: %v", err)
+		}
+		keyHex = hex.EncodeToString(crypto.FromECDSA(ecdsaKey))
+	}
+	signer, err := NewSigner(keyHex, chainID)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	return signer
+}
+
+// TestV2Order is a live integration test against clob.polymarket.com.
+// Skipped unless VAGUS_LIVE_CLOB_TESTS=1 and VAGUS_TEST_PRIVATE_KEY are set.
 func TestV2Order(t *testing.T) {
+	if os.Getenv(envLiveCLOB) != "1" || strings.TrimSpace(os.Getenv(envTestPrivateKey)) == "" {
+		t.Skipf("live CLOB test skipped: set %s=1 and %s to run", envLiveCLOB, envTestPrivateKey)
+	}
 	creds := &ClobCreds{
-		APIKey:        "***REMOVED-API-KEY***",
-		APISecret:     "***REMOVED-API-SECRET***",
-		APIPassphrase: "***REMOVED-PASSPHRASE***",
+		APIKey:        os.Getenv("VAGUS_TEST_CLOB_API_KEY"),
+		APISecret:     os.Getenv("VAGUS_TEST_CLOB_API_SECRET"),
+		APIPassphrase: os.Getenv("VAGUS_TEST_CLOB_API_PASSPHRASE"),
 	}
 
-	client, err := NewClobClient("***REMOVED-PRIVATE-KEY***", creds, "https://clob.polymarket.com", 137)
+	client, err := NewClobClient(os.Getenv(envTestPrivateKey), creds, "https://clob.polymarket.com", 137)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +91,8 @@ func TestV2Order(t *testing.T) {
 }
 
 func TestPoly1271Order(t *testing.T) {
-	privKey := "***REMOVED-PRIVATE-KEY***"
-	depositWallet := "0x2ed0ef344e96fc0e2e2fb3622474715f92d93173"
-
-	signer, err := NewSigner(privKey, 137)
-	if err != nil {
-		t.Fatal(err)
-	}
+	depositWallet := testDepositWallet
+	signer := newTestSigner(t, 137)
 
 	args := OrderArgs{
 		TokenID:  "36161990524808999529099890841186860907449767867066339846328156147773282747583",
@@ -137,14 +171,10 @@ func TestPoly1271Order(t *testing.T) {
 //  4. Verifies the ECDSA signature recovers to the correct signer
 //  5. Verifies Solady isValidSignature reconstruction matches
 func TestPoly1271Verification(t *testing.T) {
-	privKey := "***REMOVED-PRIVATE-KEY***"
-	depositWallet := "0x2ed0ef344e96fc0e2e2fb3622474715f92d93173"
+	depositWallet := testDepositWallet
 	exchangeAddr := ExchangeV2
 
-	signer, err := NewSigner(privKey, 137)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := newTestSigner(t, 137)
 
 	args := OrderArgs{
 		TokenID:  "36161990524808999529099890841186860907449767867066339846328156147773282747583",
@@ -323,12 +353,9 @@ func TestPoly1271Verification(t *testing.T) {
 }
 
 func TestPoly1271SigningDeterminism(t *testing.T) {
-	signer, err := NewSigner("***REMOVED-PRIVATE-KEY***", 137)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := newTestSigner(t, 137)
 
-	depWallet := common.HexToAddress("0x2ed0ef344e96fc0e2e2fb3622474715f92d93173")
+	depWallet := common.HexToAddress(testDepositWallet)
 	contentsHash := common.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").Bytes()
 
 	exchangeDomainSep := common.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222").Bytes()

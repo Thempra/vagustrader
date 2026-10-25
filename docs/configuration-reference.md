@@ -147,7 +147,7 @@ markets:
 **`.env`:**
 
 ```env
-PRIVATE_KEY=0x<PLACEHOLDER>
+PRIVATE_KEY=<hex-private-key>   # placeholder, never a real value
 CLOB_API_KEY=
 CLOB_API_SECRET=
 CLOB_API_PASSPHRASE=
