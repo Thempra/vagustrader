@@ -67,6 +67,7 @@ vagustrader simulate-settlement      # Simulate 1 WIN + 1 LOSS (testing)
 | `CHAIN_ID` | No | Chain ID (137 for Polygon) |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot token for notifications |
 | `TELEGRAM_CHAT_ID` | No | Telegram chat ID for notifications |
+| `BUGSINK_DSN` | No | Bugsink project DSN for error tracking. When set, `ERROR` logs and recovered panics are shipped to https://tracker.thempra.net. Empty disables it. |
 
 ### config.yml
 
