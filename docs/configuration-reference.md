@@ -23,6 +23,7 @@ VagusTrader uses two configuration sources merged at startup:
 | `CHAIN_ID` | No | `137` | Polygon chain ID (137 = mainnet). |
 | `TELEGRAM_BOT_TOKEN` | No | `""` | Telegram bot token for notifications. Notifications disabled when empty. |
 | `TELEGRAM_CHANNEL_ID` | No | `""` | Telegram channel/chat ID for notifications. |
+| `BUGSINK_DSN` | No | `""` | Bugsink project DSN (`https://…@tracker.thempra.net/<id>`). When set, every `ERROR` log record and every recovered panic is shipped to the error tracker. Empty disables reporting entirely. The DSN embeds an ingestion key: keep it in `.env`, never in git. |
 
 > `*` Paper trading does not require `PRIVATE_KEY`. Derive-only operations (e.g. `derive-creds` command) also require it.
 

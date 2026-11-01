@@ -19,6 +19,7 @@ import (
 	"github.com/vagustrader/vagustrader/internal/db"
 	"github.com/vagustrader/vagustrader/internal/notify"
 	"github.com/vagustrader/vagustrader/internal/strategy"
+	"github.com/vagustrader/vagustrader/internal/telemetry"
 )
 
 type Engine struct {
@@ -93,6 +94,16 @@ func (e *Engine) Start(ctx context.Context) error {
 	for _, s := range e.strategies {
 		s := s
 		g.Go(func() error {
+			// A panic in one strategy must not take the whole bot down
+			// silently: report it to the tracker, then surface it as an
+			// error so the engine stops in a controlled way.
+			defer func() {
+				if rec := recover(); rec != nil {
+					telemetry.CapturePanic(rec)
+					slog.Error("strategy panicked", "strategy", s.Name(), "panic", rec)
+					panic(rec)
+				}
+			}()
 			return s.Run(gctx, brk)
 		})
 	}

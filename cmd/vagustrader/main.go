@@ -19,6 +19,7 @@ import (
 	"github.com/vagustrader/vagustrader/internal/engine"
 	"github.com/vagustrader/vagustrader/internal/logging"
 	"github.com/vagustrader/vagustrader/internal/strategy"
+	"github.com/vagustrader/vagustrader/internal/telemetry"
 )
 
 var rootCmd = &cobra.Command{
@@ -38,6 +39,10 @@ var runCmd = &cobra.Command{
 		}
 
 		settings := cfg.LoadSettings()
+		stopTelemetry := startTelemetry(settings.BugsinkDSN, modeName(paper))
+		defer stopTelemetry()
+		defer func() { telemetry.CapturePanic(recover()) }()
+
 		appConfig := cfg.LoadAppConfig(configPath)
 
 		mode := "PAPER"
@@ -266,6 +271,15 @@ var dashboardCmd = &cobra.Command{
 		port, _ := cmd.Flags().GetInt("port")
 		dbPath, _ := cmd.Flags().GetString("db")
 		configPath, _ := cmd.Flags().GetString("config")
+
+		if err := logging.Setup("logs"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: file logging disabled: %v\n", err)
+		}
+		settings := cfg.LoadSettings()
+		stopTelemetry := startTelemetry(settings.BugsinkDSN, "dashboard")
+		defer stopTelemetry()
+		defer func() { telemetry.CapturePanic(recover()) }()
+
 		dashboard.Serve(port, dbPath, configPath)
 		return nil
 	},
@@ -484,6 +498,25 @@ func init() {
 	rootCmd.AddCommand(simulateSettleCmd)
 
 	simulateSettleCmd.Flags().String("db", "data/vagustrader.db", "Path to SQLite database")
+}
+
+// modeName renders the run mode for the error-tracker "environment" tag.
+func modeName(paper bool) string {
+	if paper {
+		return "paper"
+	}
+	return "live"
+}
+
+// startTelemetry wires the process into Bugsink. It returns a stop function
+// that flushes pending events on shutdown; when BUGSINK_DSN is unset the
+// returned function is a no-op, so tracking stays opt-in.
+func startTelemetry(dsn, environment string) func() {
+	return telemetry.Init(telemetry.Config{
+		DSN:         dsn,
+		Environment: environment,
+		Release:     telemetry.Release(),
+	})
 }
 
 func main() {

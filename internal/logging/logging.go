@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/vagustrader/vagustrader/internal/telemetry"
 )
 
 type rotatingWriter struct {
@@ -73,6 +75,8 @@ func Setup(logDir string) error {
 	}
 	multi := io.MultiWriter(os.Stderr, rw)
 	handler := slog.NewJSONHandler(multi, &slog.HandlerOptions{Level: slog.LevelInfo})
-	slog.SetDefault(slog.New(handler))
+	// Error records are also shipped to the error tracker (BUGSINK_DSN);
+	// the wrapper is a no-op when tracking is disabled.
+	slog.SetDefault(slog.New(telemetry.Wrap(handler)))
 	return nil
 }

@@ -22,6 +22,10 @@ type Settings struct {
 	TelegramBotToken    string
 	TelegramChannelID   string
 
+	// BugsinkDSN is the error-tracking DSN (Bugsink speaks Sentry's protocol).
+	// Empty disables reporting; see internal/telemetry.
+	BugsinkDSN string
+
 	// PaperBankroll is the starting virtual balance given to each paper
 	// strategy wallet. Defaults to the size of the real trading account so
 	// paper results reflect reality instead of an unrealistic $10k cushion.
@@ -43,6 +47,7 @@ func LoadSettings() Settings {
 		ChainID:           envInt("CHAIN_ID", 137),
 		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChannelID: os.Getenv("TELEGRAM_CHANNEL_ID"),
+		BugsinkDSN:        os.Getenv("BUGSINK_DSN"),
 		PaperBankroll:    envFloatOr("PAPER_BANKROLL", 127.0),
 	}
 }
