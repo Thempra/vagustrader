@@ -15,11 +15,11 @@ import (
 )
 
 type ClobClient struct {
-	host           string
-	signer         *Signer
-	creds          *ClobCreds
-	client         *http.Client
-	DepositWallet  string
+	host          string
+	signer        *Signer
+	creds         *ClobCreds
+	client        *http.Client
+	DepositWallet string
 }
 
 func NewClobClient(privateKey string, creds *ClobCreds, host string, chainID int) (*ClobClient, error) {
@@ -136,7 +136,10 @@ func (c *ClobClient) GetBalance() (float64, error) {
 
 func (c *ClobClient) GetOrder(orderID string) (*OrderStatus, error) {
 	var result map[string]interface{}
-	if err := c.authedGet("/order/"+orderID, "", &result); err != nil {
+	// Orders live under /data/order/{id}: the bare /order/{id} path is 404
+	// (only DELETE /order exists), so the old call silently turned every fill
+	// verification into "unverified" and the bot refused its own orders.
+	if err := c.authedGet("/data/order/"+orderID, "", &result); err != nil {
 		return nil, fmt.Errorf("get order %s: %w", orderID, err)
 	}
 	status := &OrderStatus{OrderID: orderID}
@@ -165,8 +168,18 @@ func (c *ClobClient) GetOpenOrders() ([]map[string]interface{}, error) {
 }
 
 func (c *ClobClient) CancelOrder(orderID string) (map[string]interface{}, error) {
+	// The CLOB cancels with DELETE /order and the id in a JSON body; a
+	// DELETE /order/{id} path does not exist and answers 404, which left
+	// unverified orders resting on the book with collateral locked.
+	body, err := json.Marshal(map[string]string{"orderID": orderID})
+	if err != nil {
+		return nil, err
+	}
 	var result map[string]interface{}
-	if err := c.authedDelete("/order/"+orderID, &result); err != nil {
+	ts := time.Now().Unix()
+	sig := BuildHMACSignature(c.creds.APISecret, ts, http.MethodDelete, "/order", string(body))
+	headers := c.authHeaders(ts, sig)
+	if err := c.doRequest(http.MethodDelete, c.host+"/order", body, headers, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

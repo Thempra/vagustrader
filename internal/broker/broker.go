@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,12 @@ import (
 	"github.com/vagustrader/vagustrader/internal/notify"
 )
 
-const clobREST = "https://clob.polymarket.com"
+// Package-level vars (not consts) so tests can point them at httptest
+// servers; nothing in production mutates them.
+var (
+	clobREST  = "https://clob.polymarket.com"
+	gammaREST = "https://gamma-api.polymarket.com"
+)
 
 // marketCacheTTL bounds how long a cached market document is considered fresh.
 // 60s matches Polymarket's typical price-update cadence and prevents the 5
@@ -203,40 +209,45 @@ func (b *Broker) UpsertMarketMeta(m *db.MarketMeta) error {
 }
 
 func fetchClobMarket(conditionID string) map[string]interface{} {
-	u := clobREST + "/markets/" + conditionID
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("User-Agent", "vagustrader/0.1")
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("CLOB market fetch failed", "condition", conditionID[:min(12, len(conditionID))], "error", err)
-		return nil
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil
+	raw := getJSONWithRetry(clobREST+"/markets/"+conditionID, 3)
+	if raw == nil {
+		// gamma is the fallback for the fields the CLOB does not carry
+		// consistently: a burst of cold-cache fetches can also hit the
+		// CLOB rate limiter and come back empty.
+		raw = gammaMarketFallback(conditionID)
+		if raw == nil {
+			return nil
+		}
 	}
 
 	endDate, _ := raw["end_date_iso"].(string)
 	if endDate == "" {
-		if v, ok := raw["endDate"].(string); ok {
-			endDate = v
+		endDate = stringVal(raw, "endDate")
+	}
+	if endDate == "" {
+		if g := gammaMarketFallback(conditionID); g != nil {
+			endDate, _ = g["end_date_iso"].(string)
 		}
 	}
 	question, _ := raw["question"].(string)
-	slug, _ := raw["slug"].(string)
+	// The CLOB calls it market_slug; older payloads used slug.
+	slug := stringVal(raw, "slug")
+	if slug == "" {
+		slug = stringVal(raw, "market_slug")
+	}
 	active, _ := raw["active"].(bool)
 	closed, _ := raw["closed"].(bool)
-	tickSize, _ := raw["tick_size"].(string)
+	// The CLOB returns minimum_tick_size as a JSON number, not the
+	// tick_size string this code used to look for — the miss silently
+	// downgraded every market to the 0.01 default, which is wrong for
+	// the 0.001-tick markets.
+	tickSize := stringVal(raw, "tick_size")
+	if tickSize == "" {
+		tickSize = fmt.Sprintf("%g", floatVal(raw, "minimum_tick_size"))
+	}
+	if tickSize == "0" || tickSize == "" {
+		tickSize = "0.01"
+	}
 
 	var parsedTokens []map[string]interface{}
 	if rawTokens, ok := raw["tokens"].([]interface{}); ok {
@@ -270,6 +281,110 @@ func fetchClobMarket(conditionID string) map[string]interface{} {
 func stringVal(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
+}
+
+// getJSONWithRetry fetches a JSON object, retrying on transport errors and
+// non-2xx responses. A single attempt was not enough: at cold start the
+// strategies fan out dozens of concurrent market lookups and the CLOB
+// answers some of them with 429/timeouts, which surfaced as "market end
+// date unknown" and silently skipped otherwise tradeable markets.
+func getJSONWithRetry(url string, attempts int) map[string]interface{} {
+	if attempts < 1 {
+		attempts = 1
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(150*(1<<uint(i-1))) * time.Millisecond)
+		}
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("User-Agent", "vagustrader/1.0")
+		req.Header.Set("Accept", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			lastErr = rerr
+			continue
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("http %d", resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("http %d", resp.StatusCode)
+			continue
+		}
+		var raw map[string]interface{}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			lastErr = err
+			continue
+		}
+		return raw
+	}
+	if lastErr != nil {
+		slog.Debug("market lookup failed after retries", "url", url, "error", lastErr)
+	}
+	return nil
+}
+
+// gammaMarketFallback resolves a market through gamma-api, which still
+// publishes endDate even when the CLOB record omits end_date_iso.
+func gammaMarketFallback(conditionID string) map[string]interface{} {
+	markets := getJSONArrayWithRetry(gammaREST+"/markets?condition_ids="+url.QueryEscape(conditionID), 2)
+	if len(markets) == 0 {
+		return nil
+	}
+	m := markets[0]
+	end := stringVal(m, "endDate")
+	if end == "" {
+		end = stringVal(m, "end_date_iso")
+	}
+	return map[string]interface{}{
+		"end_date_iso": end,
+		"question":     stringVal(m, "question"),
+		"slug":         stringVal(m, "slug"),
+		"active":       m["active"],
+		"closed":       m["closed"],
+	}
+}
+
+func getJSONArrayWithRetry(url string, attempts int) []map[string]interface{} {
+	client := &http.Client{Timeout: 10 * time.Second}
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(150*(1<<uint(i-1))) * time.Millisecond)
+		}
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("User-Agent", "vagustrader/1.0")
+		req.Header.Set("Accept", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+		var arr []map[string]interface{}
+		if err := json.Unmarshal(body, &arr); err != nil {
+			continue
+		}
+		return arr
+	}
+	return nil
 }
 
 func floatVal(m map[string]interface{}, key string) float64 {
