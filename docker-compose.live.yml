@@ -4,9 +4,14 @@ x-polymarket-hosts: &polymarket-hosts
   # ISP SNI/IP block (oct-2026): the two Cloudflare IPs Polymarket DNS returns
   # (104.18.34.205 / 172.64.153.51) get TLS-reset from this hosting's egress,
   # but other Cloudflare IPs in the same PoP serve vhost+SNI correctly.
-  # Pin the hostnames to a working Cloudflare IP (verified 2026-10-06).
+  # Pin the hostnames to a working Cloudflare IP (verified 2026-11-07).
+  #
+  # gamma-api is NOT pinned on purpose: it moved to CloudFront (13.224.83.x)
+  # and the old Cloudflare pin answers 421 Misdirected Request, which the bot
+  # surfaced as "gamma parse response: invalid character 'g'". Resolve it via DNS.
+  # Verified from the prod host 2026-11-07: clob pin=200/dns=000, data-api
+  # pin=200/dns=000, gamma dns=200/pin=421.
   - "clob.polymarket.com:104.17.207.5"
-  - "gamma-api.polymarket.com:104.17.207.5"
   - "data-api.polymarket.com:104.17.207.5"
   - "ws-subscriptions-clob.polymarket.com:104.17.207.5"
   - "www.clob.polymarket.com:104.17.207.5"

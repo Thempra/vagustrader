@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// apiPrefix is the version path of the public Polymarket data API. v1 was
+// retired by Polymarket (every path under the root answers
+// 410 "Data API v1 has been retired"), and v2 differs from it in three ways
+// this client has to honour:
+//
+//  1. every response is an envelope {"data": [...], "pagination": {...}}
+//     instead of a bare JSON array;
+//  2. pagination is cursor-only — passing "offset" is a hard 400, the next
+//     page is requested with pagination.next_cursor;
+//  3. the field names changed (asset -> token_id, size -> current_size,
+//     currentValue -> current_value, ...).
+const apiPrefix = "/v2"
+
+// pageCap bounds how many pages a paginated walk follows, so a pagination
+// bug on the remote side can never spin forever.
+const pageCap = 40
+
 type LeaderboardEntry struct {
 	Address string
 	Name    string
@@ -43,38 +60,106 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
-func (c *Client) GetLeaderboard(limit, offset int) ([]LeaderboardEntry, error) {
-	u, err := url.Parse(c.baseURL + "/v1/leaderboard")
+// pagination is the v2 cursor block returned alongside every list.
+type pagination struct {
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	HasMore    bool   `json:"has_more"`
+	NextCursor string `json:"next_cursor"`
+}
+
+// envelope is the v2 response shape: rows live under "data".
+type envelope struct {
+	Data       []map[string]interface{} `json:"data"`
+	Pagination pagination               `json:"pagination"`
+}
+
+// getJSON fetches path (relative to the API root) with the given query and
+// decodes the v2 envelope. It identifies itself with a User-Agent because
+// Polymarket's CDN 403s default Go/Python client agents.
+func (c *Client) getJSON(path string, q url.Values) (*envelope, error) {
+	u, err := url.Parse(c.baseURL + apiPrefix + path)
 	if err != nil {
 		return nil, err
 	}
-	q := u.Query()
-	q.Set("limit", strconv.Itoa(limit))
-	q.Set("offset", strconv.Itoa(offset))
-	q.Set("timePeriod", "ALL")
-	q.Set("orderBy", "PNL")
-	u.RawQuery = q.Encode()
-
-	resp, err := c.client.Get(u.String())
+	if q != nil {
+		u.RawQuery = q.Encode()
+	}
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "vagustrader/1.0")
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("leaderboard request failed: %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s request failed: %d", path, resp.StatusCode)
 	}
-
-	var raw []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	var env envelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return nil, err
 	}
+	return &env, nil
+}
 
-	entries := make([]LeaderboardEntry, 0, len(raw))
-	for _, d := range raw {
-		entries = append(entries, parseEntry(d))
+// getPaged walks every page of path/q with the cursor, calling fn for each
+// row. It stops at pageCap pages or when the server reports no more data.
+func (c *Client) getPaged(path string, q url.Values, fn func(map[string]interface{})) error {
+	if q == nil {
+		q = url.Values{}
 	}
-	return entries, nil
+	cursor := ""
+	for page := 0; page < pageCap; page++ {
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		env, err := c.getJSON(path, q)
+		if err != nil {
+			return err
+		}
+		if len(env.Data) == 0 {
+			return nil
+		}
+		for _, d := range env.Data {
+			fn(d)
+		}
+		if !env.Pagination.HasMore || env.Pagination.NextCursor == "" {
+			return nil
+		}
+		cursor = env.Pagination.NextCursor
+		// Be gentle with the public API to avoid 403 rate limits.
+		time.Sleep(150 * time.Millisecond)
+	}
+	return nil
+}
+
+func (c *Client) GetLeaderboard(limit, offset int) ([]LeaderboardEntry, error) {
+	// v2 has no offset: walk from the start and drop the first `offset` rows.
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit+offset))
+	q.Set("timePeriod", "ALL")
+	q.Set("orderBy", "PNL")
+
+	var out []LeaderboardEntry
+	err := c.getPaged("/leaderboard", q, func(d map[string]interface{}) {
+		out = append(out, parseEntry(d))
+	})
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		if offset >= len(out) {
+			return nil, nil
+		}
+		out = out[offset:]
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (c *Client) GetTopTraders(minPnL float64, limit int) ([]LeaderboardEntry, error) {
@@ -96,78 +181,43 @@ func (c *Client) GetTopTraders(minPnL float64, limit int) ([]LeaderboardEntry, e
 // Polymarket holds trading collateral in a separate proxy wallet (the
 // deposit/CIP wallet, which owns the positions), so this is the number the
 // dashboard should show as the real wallet balance. It is auth-free and
-// read-only. Pages through /positions with an offset up to a sane cap.
+// read-only.
 func (c *Client) PortfolioValue(userAddress string) (float64, error) {
-	const pageSize = 500
-	const maxPages = 40 // 20k positions cap for safety
-	var total float64
-	for page := 0; page < maxPages; page++ {
-		u, err := url.Parse(c.baseURL + "/positions")
-		if err != nil {
-			return 0, err
-		}
-		q := u.Query()
-		q.Set("user", userAddress)
-		q.Set("sizeThreshold", "0")
-		q.Set("limit", strconv.Itoa(pageSize))
-		q.Set("offset", strconv.Itoa(page*pageSize))
-		u.RawQuery = q.Encode()
+	q := url.Values{}
+	q.Set("user", userAddress)
+	q.Set("sizeThreshold", "0")
+	q.Set("limit", "500")
 
-		resp, err := c.client.Get(u.String())
-		if err != nil {
-			return 0, err
+	var total float64
+	err := c.getPaged("/positions", q, func(d map[string]interface{}) {
+		// current_size is the still-open size; the response also carries
+		// fully closed rows, which must not count towards the value.
+		if floatVal(d, "current_size") <= 0 {
+			return
 		}
-		var raw []map[string]interface{}
-		decodeErr := json.NewDecoder(resp.Body).Decode(&raw)
-		resp.Body.Close()
-		if decodeErr != nil {
-			return 0, decodeErr
-		}
-		if resp.StatusCode != http.StatusOK {
-			return 0, fmt.Errorf("portfolio request failed: %d", resp.StatusCode)
-		}
-		if len(raw) == 0 {
-			break
-		}
-		for _, d := range raw {
-			total += floatVal(d, "currentValue")
-		}
-		if len(raw) < pageSize {
-			break
-		}
-		// Be gentle with the public API to avoid 403 rate limits.
-		time.Sleep(150 * time.Millisecond)
+		total += floatVal(d, "current_value")
+	})
+	if err != nil {
+		return 0, err
 	}
 	return total, nil
 }
 
 func (c *Client) GetPositions(userAddress string) ([]Position, error) {
-	u, err := url.Parse(c.baseURL + "/positions")
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("user", userAddress)
-	u.RawQuery = q.Encode()
+	q.Set("sizeThreshold", "0")
+	q.Set("limit", "500")
 
-	resp, err := c.client.Get(u.String())
+	positions := make([]Position, 0, 32)
+	err := c.getPaged("/positions", q, func(d map[string]interface{}) {
+		if floatVal(d, "current_size") <= 0 {
+			return
+		}
+		positions = append(positions, parsePosition(d))
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("positions request failed: %d", resp.StatusCode)
-	}
-
-	var raw []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
-
-	positions := make([]Position, 0, len(raw))
-	for _, d := range raw {
-		positions = append(positions, parsePosition(d))
 	}
 	return positions, nil
 }
@@ -186,43 +236,19 @@ type FillCheck struct {
 // couple of seconds and requires no auth, so it is the reliable source of
 // "did my order actually execute".
 func (c *Client) FindRecentFill(userAddress, tokenID string, sinceUnix int64) (*FillCheck, error) {
-	u, err := url.Parse(c.baseURL + "/trades")
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("user", userAddress)
 	q.Set("limit", "100")
 	q.Set("takerOnly", "false")
-	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	// Polymarket's CDN 403s default HTTP client user agents
-	// (Go-http-client/Python-urllib); identify ourselves.
-	req.Header.Set("User-Agent", "vagustrader/1.0")
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("trades request failed: %d", resp.StatusCode)
-	}
-	var raw []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
 	var agg *FillCheck
 	var total float64
-	for _, d := range raw {
-		if stringVal(d, "asset") != tokenID {
-			continue
+	err := c.getPaged("/trades", q, func(d map[string]interface{}) {
+		if stringVal(d, "token_id") != tokenID {
+			return
 		}
 		if int64(floatVal(d, "timestamp")) < sinceUnix {
-			continue
+			return
 		}
 		size := floatVal(d, "size")
 		price := floatVal(d, "price")
@@ -232,6 +258,9 @@ func (c *Client) FindRecentFill(userAddress, tokenID string, sinceUnix int64) (*
 		agg.Size += size
 		agg.Price = price
 		total += size * price
+	})
+	if err != nil {
+		return nil, err
 	}
 	if agg == nil || total <= 0 {
 		return nil, nil
@@ -243,61 +272,44 @@ func (c *Client) FindRecentFill(userAddress, tokenID string, sinceUnix int64) (*
 }
 
 func (c *Client) GetActivity(userAddress string, limit int) ([]map[string]interface{}, error) {
-	u, err := url.Parse(c.baseURL + "/activity")
-	if err != nil {
-		return nil, err
-	}
-	q := u.Query()
+	q := url.Values{}
 	q.Set("user", userAddress)
 	q.Set("limit", strconv.Itoa(limit))
-	u.RawQuery = q.Encode()
 
-	resp, err := c.client.Get(u.String())
+	out := make([]map[string]interface{}, 0, limit)
+	err := c.getPaged("/activity", q, func(d map[string]interface{}) {
+		out = append(out, d)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("activity request failed: %d", resp.StatusCode)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
-
-	var result []map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return out, nil
 }
 
 func parseEntry(d map[string]interface{}) LeaderboardEntry {
 	return LeaderboardEntry{
-		Address: stringVal(d, "proxyWallet"),
-		Name:    stringVal(d, "userName"),
+		Address: stringVal(d, "user_id"),
+		Name:    stringVal(d, "user_name"),
 		PnL:     floatVal(d, "pnl"),
-		Volume:  floatVal(d, "vol"),
+		Volume:  floatVal(d, "volume"),
 	}
 }
 
 func parsePosition(d map[string]interface{}) Position {
-	tokenID := stringVal(d, "asset")
-	if tokenID == "" {
-		tokenID = stringVal(d, "tokenId")
-	}
-	marketID := stringVal(d, "conditionId")
-	if marketID == "" {
-		marketID = stringVal(d, "market")
-	}
 	return Position{
-		TokenID:      tokenID,
-		MarketID:     marketID,
+		TokenID:      stringVal(d, "token_id"),
+		MarketID:     stringVal(d, "condition_id"),
 		Outcome:      stringVal(d, "outcome"),
-		Size:         floatVal(d, "size"),
-		AvgPrice:     floatVal(d, "avgPrice"),
-		CurrentValue: floatVal(d, "currentValue"),
+		Size:         floatVal(d, "current_size"),
+		AvgPrice:     floatVal(d, "avg_price"),
+		CurrentValue: floatVal(d, "current_value"),
 		Slug:         stringVal(d, "slug"),
 		Icon:         stringVal(d, "icon"),
-		CashPnl:      floatVal(d, "cashPnl"),
-		PercentPnl:   floatVal(d, "percentPnl"),
+		CashPnl:      floatVal(d, "total_pnl"),
+		PercentPnl:   floatVal(d, "percent_pnl"),
 	}
 }
 
